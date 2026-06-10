@@ -151,7 +151,15 @@ class CasbinPolicyEngine(PolicyEngine):
         self._enforcer.remove_filtered_grouping_policy(1, role)
 
     def list_roles(self) -> List[str]:
-        return sorted({p[0] for p in self._enforcer.get_policy()})
+        # Roles defined by scope policies (p rows) PLUS roles that only exist as
+        # assignments (g rows: subject -> role) so an assignment-only role is still
+        # inspectable/cleanable rather than a phantom the API can't see.
+        roles = {p[0] for p in self._enforcer.get_policy()}
+        try:
+            roles |= {g[1] for g in self._enforcer.get_grouping_policy() if len(g) >= 2}
+        except Exception:
+            pass
+        return sorted(roles)
 
     # --- assignments -----------------------------------------------------
     def assign(self, subject: str, role: str) -> None:
@@ -202,14 +210,25 @@ class CasbinPolicyEngine(PolicyEngine):
         subject: Optional[str] = None,
         roles: Optional[List[str]] = None,
     ) -> Set[str]:
-        """List-filtering support from the subject's implicit permissions (direct +
-        via roles). ``{"*"}`` for wildcard/collection grants, else specific ids."""
-        if not resource_type or not subject:
+        """List-filtering support from the principal's implicit permissions (direct +
+        via roles). ``{"*"}`` for wildcard/collection grants, else specific ids.
+
+        Roles-from-token take precedence (mirroring :meth:`_enforce`): when ``roles``
+        is given, permissions are enumerated for each role; otherwise for the subject's
+        stored assignments. Without this, the roles-from-token (IdP) population — whose
+        grants live on the role, not the subject — would get an empty list and see
+        nothing on collection endpoints despite the route gate allowing them."""
+        if not resource_type:
             return set()
-        try:
-            perms = self._enforcer.get_implicit_permissions_for_user(subject)
-        except Exception:
-            perms = [p for p in self._enforcer.get_policy() if p and p[0] == subject]
+        principals = list(roles) if roles else ([subject] if subject else [])
+        if not principals:
+            return set()
+        perms: List[Any] = []
+        for principal in principals:
+            try:
+                perms.extend(self._enforcer.get_implicit_permissions_for_user(principal))
+            except Exception:
+                perms.extend(p for p in self._enforcer.get_policy() if p and p[0] == principal)
 
         ids: Set[str] = set()
         for perm in perms:

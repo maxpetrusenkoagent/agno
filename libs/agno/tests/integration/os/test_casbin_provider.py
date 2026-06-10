@@ -92,6 +92,7 @@ def test_accessible_resource_ids_honours_roles_from_token(tmp_path):
     filtering must enumerate the role's grants, else collection endpoints return
     empty for exactly the population the route gate allows."""
     prov = CasbinAuthorizationProvider(_enforcer(tmp_path), roles_claim="roles")
+    # idp-user has NO g assignment; the token carries `member`.
     read_ctx = AuthorizationContext(
         principal_id="auth0|xyz", resource_type="agents", resource_id=None,
         action="read", claims={"roles": ["member"]},

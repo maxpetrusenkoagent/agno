@@ -16,6 +16,7 @@ change rather than a fork of the request pipeline.
 """
 
 from agno.os.authz.audit import AuditEvent, AuditSink, DbAuditSink, LoggingAuditSink
+from agno.os.authz.engine import EngineAuthorizationProvider, PolicyEngine, ScopeEntry
 from agno.os.authz.provider import (
     AuthorizationContext,
     AuthorizationProvider,
@@ -26,6 +27,11 @@ __all__ = [
     "AuthorizationContext",
     "AuthorizationProvider",
     "ScopeAuthorizationProvider",
+    # Swappable managed-roles backend (the port + its generic provider). The
+    # Casbin adapter stays behind the optional extra and is NOT exported here.
+    "PolicyEngine",
+    "ScopeEntry",
+    "EngineAuthorizationProvider",
     "AuditEvent",
     "AuditSink",
     "LoggingAuditSink",
