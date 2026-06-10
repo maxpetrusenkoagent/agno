@@ -11,9 +11,10 @@ allowed to do, and you enforce it on every request.
 This file shows the realistic, production-shaped version of that:
 
 1. The token is signed by the login service with its private key (RS256). You
-   verify it against the service's PUBLIC keys, which it publishes at a URL (a
-   "JWKS"). agno fetches and rotates those for you. In production it's one line:
-       AuthorizationConfig(jwks_url="https://<tenant>.auth0.com/.well-known/jwks.json", ...)
+   verify it against the service's PUBLIC keys, which it publishes as a "JWKS"
+   (e.g. at https://<tenant>.auth0.com/.well-known/jwks.json). Download it and
+   point agno at the file:
+       AuthorizationConfig(jwks_file="auth0_jwks.json", ...)
    (Here we generate a throwaway key and publish it to a local file so the example
    runs offline; the behaviour is identical.)
 2. The token says who issued it (`iss`) and who it's for (`aud`). We pin both, so
@@ -152,8 +153,8 @@ agent_os = AgentOS(
     agents=[research_agent],
     authorization=True,
     authorization_config=AuthorizationConfig(
-        # Verify tokens against the login service's published public keys.
-        # In production: jwks_url="https://<tenant>.auth0.com/.well-known/jwks.json"
+        # Verify tokens against the login service's published public keys
+        # (in production, its JWKS downloaded from .well-known/jwks.json).
         jwks_file=JWKS_PATH,
         algorithm="RS256",
         verify_audience=True,

@@ -43,7 +43,7 @@ Verifying tokens - pick whichever fits; auto-selected by env, no code change:
   - Dev (default): a built-in HS256 secret. On startup it prints a ready-made
     admin bearer token you can paste into the frontend / curl to try the API.
   - Control plane / IdP: set ONE of
-        JWT_JWKS_URL          a JWKS the control plane / IdP publishes (RS256)
+        JWT_JWKS_FILE         path to a JWKS downloaded from your IdP (RS256)
         JWT_VERIFICATION_KEY  your OS public key (RS256) or an HS256 secret
     plus OS_ID (the token audience / your os_id) and, optionally,
         JWT_ISSUER           pin the issuer, e.g. "agent-os-api"
@@ -80,13 +80,13 @@ ADMIN_SUBJECT = os.getenv("ADMIN_SUBJECT", "admin")  # whose `sub` is the bootst
 ISSUER = os.getenv("JWT_ISSUER") or None  # optionally pin the issuer (e.g. agent-os-api)
 
 # Verification source, in priority order:
-#   1. JWT_JWKS_URL         - a JWKS the control plane / IdP publishes (RS256)
+#   1. JWT_JWKS_FILE         - path to a JWKS downloaded from your control plane / IdP (RS256)
 #   2. JWT_VERIFICATION_KEY  - the OS public key (RS256) or an HS256 secret
 #   3. dev fallback          - a built-in HS256 secret (prints an admin token)
-JWKS_URL = os.getenv("JWT_JWKS_URL") or None
+JWKS_FILE = os.getenv("JWT_JWKS_FILE") or None
 VERIFICATION_KEY = (os.getenv("JWT_VERIFICATION_KEY") or "").replace("\\n", "\n") or None
 DEV_SECRET = "your-secret-key-at-least-256-bits-long"
-if JWKS_URL:
+if JWKS_FILE:
     ALGORITHM, KEYS = "RS256", None
 elif VERIFICATION_KEY:
     ALGORITHM, KEYS = ("RS256" if "BEGIN" in VERIFICATION_KEY else "HS256"), [VERIFICATION_KEY]
@@ -136,7 +136,7 @@ agent_os = AgentOS(
     authorization=True,
     authorization_config=AuthorizationConfig(
         verification_keys=KEYS,
-        jwks_url=JWKS_URL,
+        jwks_file=JWKS_FILE,
         algorithm=ALGORITHM,
         verify_audience=True,
         audience=OS_ID,
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 78)
     print("USER + ROLE MANAGEMENT AGENTOS - serving for a frontend")
     print("=" * 78)
-    src = "JWKS_URL" if JWKS_URL else ("JWT_VERIFICATION_KEY" if VERIFICATION_KEY else "dev secret")
+    src = "JWKS_FILE" if JWKS_FILE else ("JWT_VERIFICATION_KEY" if VERIFICATION_KEY else "dev secret")
     print("  endpoint:   http://localhost:7777")
     print("  manage at:  http://localhost:7777/authz/...   (admin-only)")
     print("  planes:     control plane (token scopes) + managed role store, in parallel")
@@ -172,7 +172,7 @@ if __name__ == "__main__":
     # try it immediately. JWTIssuer is the mint-side helper - same claims AgentOS
     # verifies, with exp/iat/jti stamped. (Control-plane RS256 tokens are minted by
     # the control plane, not here - that key is public.)
-    is_dev = ALGORITHM == "HS256" and not VERIFICATION_KEY and not JWKS_URL
+    is_dev = ALGORITHM == "HS256" and not VERIFICATION_KEY and not JWKS_FILE
     if is_dev:
         admin_token = JWTIssuer(DEV_SECRET, audience=OS_ID).create_token(ADMIN_SUBJECT, expires_in=7 * 24 * 3600)
         print("\n  dev mode - admin bearer token (paste into your frontend / curl):")
