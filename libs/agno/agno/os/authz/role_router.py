@@ -33,12 +33,14 @@ Endpoints (default prefix ``/authz``):
     DELETE /authz/users/{subject}/roles/{role}   revoke a role
 """
 
+import time
 from typing import TYPE_CHECKING, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from agno.os.schema import PaginatedResponse, PaginationInfo
+from agno.os.authz.audit import AUDIT_SORT_FIELDS, DEFAULT_AUDIT_SORT_FIELD
+from agno.os.schema import PaginatedResponse, PaginationInfo, SortOrder
 from agno.os.scopes import AgentOSScope
 
 if TYPE_CHECKING:
@@ -194,19 +196,24 @@ class UpdateUserRequest(BaseModel):
     name: Optional[str] = Field(None, description="New display name")
 
 
-def _page(items: list, page: int, limit: int) -> PaginatedResponse:
-    """Wrap a fully-materialised list in the SDK's PaginatedResponse ({data, meta})."""
-    total = len(items)
-    start = max(page - 1, 0) * limit
+def _paginated(data: list, page: int, limit: int, total: int, search_time_ms: float = 0) -> PaginatedResponse:
+    """Wrap one already-paged slice in the SDK's PaginatedResponse ({data, meta})."""
     return PaginatedResponse(
-        data=items[start : start + limit],
+        data=data,
         meta=PaginationInfo(
             page=page,
             limit=limit,
             total_count=total,
             total_pages=(total + limit - 1) // limit if limit > 0 else 0,
+            search_time_ms=search_time_ms,
         ),
     )
+
+
+def _page(items: list, page: int, limit: int) -> PaginatedResponse:
+    """Paginate a fully-materialised list."""
+    start = max(page - 1, 0) * limit
+    return _paginated(items[start : start + limit], page, limit, len(items))
 
 
 def get_roles_router(
@@ -252,7 +259,7 @@ def get_roles_router(
     @router.get("/roles", response_model=PaginatedResponse[RoleSchema])
     def list_roles(
         limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
-        page: int = Query(default=1, ge=1, description="Page number"),
+        page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
     ):
         roles = [RoleSchema.from_record(r) for r in store.list_roles_detailed()]
         return _page(roles, page, limit)
@@ -335,36 +342,39 @@ def get_roles_router(
         return [AvailableScopeItem.from_raw(r) for r in sorted(raws)]
 
     # ---- audit ----------------------------------------------------------
-    def _paged_events(items: list, page: int, limit: int, total: int) -> PaginatedResponse:
-        return PaginatedResponse(
-            data=items,
-            meta=PaginationInfo(
-                page=page,
-                limit=limit,
-                total_count=total,
-                total_pages=(total + limit - 1) // limit if limit > 0 else 0,
-            ),
-        )
+    def _validated_sort_field(sort_by: str) -> str:
+        if sort_by not in AUDIT_SORT_FIELDS:
+            raise HTTPException(status_code=422, detail=f"sort_by must be one of {list(AUDIT_SORT_FIELDS)}")
+        return sort_by
 
     @router.get("/audit")
     def list_audit(
-        limit: int = Query(default=100, ge=1, le=1000),
-        page: int = Query(default=1, ge=1, description="Page number"),
+        limit: int = Query(default=100, ge=1, le=1000, description="Items per page"),
+        page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+        search: Optional[str] = Query(default=None, description="Filter by actor/action/target (case-insensitive)"),
+        sort_by: str = Query(default=DEFAULT_AUDIT_SORT_FIELD, description="Field to sort by"),
+        sort_order: SortOrder = Query(default=SortOrder.DESC, description="Sort order (asc or desc)"),
     ) -> PaginatedResponse:
-        """*Change* events (role/assignment mutations, newest first), paginated
-        ``{data, meta}``. Empty unless the store was given a readable audit sink
-        (e.g. DbAuditSink)."""
-        events = store.audit_log(limit, offset=(page - 1) * limit)
-        return _paged_events(events, page, limit, store.audit_count())
+        """*Change* events (role/assignment mutations), paginated ``{data, meta}``.
+        Empty unless the store was given a readable audit sink (e.g. DbAuditSink)."""
+        start_ms = time.time() * 1000
+        events = store.audit_log(
+            limit, offset=(page - 1) * limit, search=search,
+            sort_by=_validated_sort_field(sort_by), order=sort_order.value,
+        )
+        total = store.audit_count(search=search)
+        return _paginated(events, page, limit, total, search_time_ms=round(time.time() * 1000 - start_ms, 2))
 
     @router.get("/decisions")
     def list_decisions(
         request: Request,
-        limit: int = Query(default=100, ge=1, le=1000),
-        page: int = Query(default=1, ge=1, description="Page number"),
+        limit: int = Query(default=100, ge=1, le=1000, description="Items per page"),
+        page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+        search: Optional[str] = Query(default=None, description="Filter by actor/action/target (case-insensitive)"),
+        sort_by: str = Query(default=DEFAULT_AUDIT_SORT_FIELD, description="Field to sort by"),
+        sort_order: SortOrder = Query(default=SortOrder.DESC, description="Sort order (asc or desc)"),
     ) -> PaginatedResponse:
-        """*Decision* events (allow/deny per request, newest first), paginated
-        ``{data, meta}``.
+        """*Decision* events (allow/deny per request), paginated ``{data, meta}``.
 
         Decision audit is configured on ``AuthorizationConfig(audit=...)`` and lands
         on ``app.state.authz_audit`` — a separate table from the change trail above,
@@ -372,10 +382,14 @@ def get_roles_router(
         readable decision sink (e.g. DbAuditSink) is configured."""
         sink = getattr(request.app.state, "authz_audit", None)
         if sink is None or not hasattr(sink, "read_decisions"):
-            return _paged_events([], page, limit, 0)
-        events = sink.read_decisions(limit, offset=(page - 1) * limit)
-        total = sink.count_decisions() if hasattr(sink, "count_decisions") else len(events)
-        return _paged_events(events, page, limit, total)
+            return _paginated([], page, limit, 0)
+        start_ms = time.time() * 1000
+        events = sink.read_decisions(
+            limit, offset=(page - 1) * limit, search=search,
+            sort_by=_validated_sort_field(sort_by), order=sort_order.value,
+        )
+        total = sink.count_decisions(search=search)
+        return _paginated(events, page, limit, total, search_time_ms=round(time.time() * 1000 - start_ms, 2))
 
     # ---- assignments ----------------------------------------------------
     def _role_of(subject: str) -> Optional[str]:
@@ -411,25 +425,17 @@ def get_roles_router(
         def list_users(
             include_disabled: bool = True,
             limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
-            page: int = Query(default=1, ge=1, description="Page number"),
+            page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
             search: Optional[str] = Query(default=None, description="Filter by id/email/name (case-insensitive substring)"),
         ):
             # Paginate in the store (offset/limit + count) so we don't materialise
             # the whole directory and resolve roles for every user on each call.
             # `search` filters before pagination, so meta counts the matches.
-            total = user_store.count(include_disabled=include_disabled, search=search)
             rows = user_store.list(
                 limit=limit, offset=(page - 1) * limit, include_disabled=include_disabled, search=search
             )
-            return PaginatedResponse(
-                data=[_user(u) for u in rows],
-                meta=PaginationInfo(
-                    page=page,
-                    limit=limit,
-                    total_count=total,
-                    total_pages=(total + limit - 1) // limit if limit > 0 else 0,
-                ),
-            )
+            total = user_store.count(include_disabled=include_disabled, search=search)
+            return _paginated([_user(u) for u in rows], page, limit, total)
 
         @router.post("/users", response_model=AuthzUserSchema)
         def create_user(body: CreateUserRequest, actor: str = Depends(require_admin)):

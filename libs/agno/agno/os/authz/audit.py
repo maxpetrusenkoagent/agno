@@ -30,6 +30,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
+# The audit-trail read contract (shared by both trails — change and decision):
+# which fields a page can be sorted by / searched over, and the defaults. The
+# roles router validates request params against these, so they have one owner.
+AUDIT_SORT_FIELDS = ("ts", "actor", "action", "target")
+AUDIT_SEARCH_FIELDS = ("actor", "action", "target")
+DEFAULT_AUDIT_SORT_FIELD = "ts"
+DEFAULT_AUDIT_SORT_ORDER = "desc"
+
 
 @dataclass
 class AuditEvent:
@@ -196,18 +204,53 @@ class DbAuditSink(AuditSink):
                 )
             )
 
-    def read(self, limit: int = 100, offset: int = 0) -> List[dict]:
-        """A page of *change* events (newest first) as plain dicts."""
+    # Both trails read the same way: sortable, searchable pages over the columns
+    # the two tables share (AUDIT_SORT_FIELDS / AUDIT_SEARCH_FIELDS). Only the
+    # row shape differs, so read()/read_decisions() are thin mappers over these
+    # two helpers.
+    @staticmethod
+    def _search_clause(table, search: str):
         import sqlalchemy as sa
 
+        pattern = f"%{search}%"
+        return sa.or_(*(table.c[f].ilike(pattern) for f in AUDIT_SEARCH_FIELDS))
+
+    def _select_page(
+        self, table, limit: int, offset: int, search: Optional[str], sort_by: str, order: str
+    ) -> List[dict]:
+        import sqlalchemy as sa
+
+        if sort_by not in AUDIT_SORT_FIELDS:
+            raise ValueError(f"sort_by must be one of {AUDIT_SORT_FIELDS}, got {sort_by!r}")
+        stmt = sa.select(table)
+        if search:
+            stmt = stmt.where(self._search_clause(table, search))
+        # For time order, sort on id: it's monotonic and finer-grained than ts
+        # (second resolution). id also tie-breaks every other field.
+        cols = (table.c.id,) if sort_by == DEFAULT_AUDIT_SORT_FIELD else (table.c[sort_by], table.c.id)
+        order_by = [c.asc() if order == "asc" else c.desc() for c in cols]
         with self._engine.connect() as conn:
-            rows = (
-                conn.execute(
-                    sa.select(self._table).order_by(self._table.c.id.desc()).limit(limit).offset(offset)
-                )
-                .mappings()
-                .all()
-            )
+            return conn.execute(stmt.order_by(*order_by).limit(limit).offset(offset)).mappings().all()
+
+    def _count(self, table, search: Optional[str]) -> int:
+        import sqlalchemy as sa
+
+        stmt = sa.select(sa.func.count()).select_from(table)
+        if search:
+            stmt = stmt.where(self._search_clause(table, search))
+        with self._engine.connect() as conn:
+            return int(conn.execute(stmt).scalar() or 0)
+
+    def read(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        search: Optional[str] = None,
+        sort_by: str = DEFAULT_AUDIT_SORT_FIELD,
+        order: str = DEFAULT_AUDIT_SORT_ORDER,
+    ) -> List[dict]:
+        """A page of *change* events as plain dicts (newest first by default;
+        ``sort_by`` one of :attr:`SORTABLE_FIELDS`, ``order`` asc|desc)."""
         return [
             {
                 "ts": r["ts"],
@@ -217,25 +260,24 @@ class DbAuditSink(AuditSink):
                 "before": json.loads(r["before"]) if r["before"] else None,
                 "after": json.loads(r["after"]) if r["after"] else None,
             }
-            for r in rows
+            for r in self._select_page(self._table, limit, offset, search, sort_by, order)
         ]
 
-    def read_decisions(self, limit: int = 100, offset: int = 0) -> List[dict]:
-        """A page of *decision* events (newest first) as plain dicts.
+    def read_decisions(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        search: Optional[str] = None,
+        sort_by: str = DEFAULT_AUDIT_SORT_FIELD,
+        order: str = DEFAULT_AUDIT_SORT_ORDER,
+    ) -> List[dict]:
+        """A page of *decision* events as plain dicts (newest first by default;
+        ``sort_by`` one of :attr:`SORTABLE_FIELDS`, ``order`` asc|desc).
+        ``target`` is ``METHOD /path``.
 
         ``metadata`` is reassembled to the same ``{required, token, scopes}`` shape
         the in-memory event carried, so readers don't care which table it came from.
         """
-        import sqlalchemy as sa
-
-        with self._engine.connect() as conn:
-            rows = (
-                conn.execute(
-                    sa.select(self._decisions).order_by(self._decisions.c.id.desc()).limit(limit).offset(offset)
-                )
-                .mappings()
-                .all()
-            )
         return [
             {
                 "ts": r["ts"],
@@ -248,19 +290,13 @@ class DbAuditSink(AuditSink):
                     "scopes": json.loads(r["scopes"]) if r["scopes"] else None,
                 },
             }
-            for r in rows
+            for r in self._select_page(self._decisions, limit, offset, search, sort_by, order)
         ]
 
-    def count(self) -> int:
-        """Total number of change events (for pagination)."""
-        import sqlalchemy as sa
+    def count(self, search: Optional[str] = None) -> int:
+        """Total number of change events (for pagination), honouring ``search``."""
+        return self._count(self._table, search)
 
-        with self._engine.connect() as conn:
-            return int(conn.execute(sa.select(sa.func.count()).select_from(self._table)).scalar() or 0)
-
-    def count_decisions(self) -> int:
-        """Total number of decision events (for pagination)."""
-        import sqlalchemy as sa
-
-        with self._engine.connect() as conn:
-            return int(conn.execute(sa.select(sa.func.count()).select_from(self._decisions)).scalar() or 0)
+    def count_decisions(self, search: Optional[str] = None) -> int:
+        """Total number of decision events (for pagination), honouring ``search``."""
+        return self._count(self._decisions, search)

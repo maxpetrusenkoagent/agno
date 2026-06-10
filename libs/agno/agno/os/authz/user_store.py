@@ -248,10 +248,31 @@ class ManagedUserStore:
             r = conn.execute(sa.select(self._table).where(self._table.c.id == id)).mappings().first()  # type: ignore[union-attr]
         return self._row_to_dict(r) if r else None
 
-    @staticmethod
-    def _matches(row: dict, needle: str) -> bool:
-        """Case-insensitive substring match across id / email / name."""
-        return any(needle in (row.get(f) or "").casefold() for f in ("id", "email", "name"))
+    # list() and count() apply the same filters (include_disabled + search) over
+    # whichever backend is active; these two helpers are that shared filtering.
+    def _filtered_mem_rows(self, include_disabled: bool, search: Optional[str]) -> List[dict]:
+        def matches(row: dict, needle: str) -> bool:
+            return any(needle in (row.get(f) or "").casefold() for f in ("id", "email", "name"))
+
+        rows = list(self._mem.values())  # type: ignore[union-attr]
+        if not include_disabled:
+            rows = [r for r in rows if not r["disabled"]]
+        if search:
+            needle = search.casefold()
+            rows = [r for r in rows if matches(r, needle)]
+        return rows
+
+    def _sql_filters(self, include_disabled: bool, search: Optional[str]) -> list:
+        import sqlalchemy as sa
+
+        clauses = []
+        if not include_disabled:
+            clauses.append(self._table.c.disabled.is_(False))  # type: ignore[union-attr]
+        if search:
+            pattern = f"%{search}%"
+            cols = (self._table.c.id, self._table.c.email, self._table.c.name)  # type: ignore[union-attr]
+            clauses.append(sa.or_(*(c.ilike(pattern) for c in cols)))
+        return clauses
 
     def list(
         self,
@@ -266,56 +287,33 @@ class ManagedUserStore:
         whole directory; pair with :meth:`count` for the total. ``search``
         filters case-insensitively by substring across id, email, and name."""
         if self._mem is not None:
-            rows = sorted(self._mem.values(), key=lambda r: r["created_at"], reverse=True)
-            if not include_disabled:
-                rows = [r for r in rows if not r["disabled"]]
-            if search:
-                needle = search.casefold()
-                rows = [r for r in rows if self._matches(r, needle)]
+            rows = sorted(
+                self._filtered_mem_rows(include_disabled, search), key=lambda r: r["created_at"], reverse=True
+            )
             return [dict(r) for r in rows[offset : offset + limit]]
 
         import sqlalchemy as sa
 
-        stmt = sa.select(self._table)
-        if not include_disabled:
-            stmt = stmt.where(self._table.c.disabled.is_(False))  # type: ignore[union-attr]
-        if search:
-            stmt = stmt.where(self._search_clause(search))
-        stmt = stmt.order_by(self._table.c.created_at.desc()).limit(limit).offset(offset)  # type: ignore[union-attr]
+        stmt = (
+            sa.select(self._table)
+            .where(*self._sql_filters(include_disabled, search))
+            .order_by(self._table.c.created_at.desc())  # type: ignore[union-attr]
+            .limit(limit)
+            .offset(offset)
+        )
         with self._engine.connect() as conn:  # type: ignore[union-attr]
             rows = conn.execute(stmt).mappings().all()
         return [self._row_to_dict(r) for r in rows]
 
-    def _search_clause(self, search: str):
-        """SQL filter for :meth:`list`/:meth:`count` — ILIKE %term% over id/email/name."""
-        import sqlalchemy as sa
-
-        pattern = f"%{search}%"
-        return sa.or_(
-            self._table.c.id.ilike(pattern),  # type: ignore[union-attr]
-            self._table.c.email.ilike(pattern),  # type: ignore[union-attr]
-            self._table.c.name.ilike(pattern),  # type: ignore[union-attr]
-        )
-
     def count(self, include_disabled: bool = True, search: Optional[str] = None) -> int:
-        """Total number of users (for pagination), optionally excluding disabled
-        and/or filtered by the same ``search`` as :meth:`list`."""
+        """Total number of users (for pagination), with the same filters as
+        :meth:`list`."""
         if self._mem is not None:
-            rows = list(self._mem.values())
-            if not include_disabled:
-                rows = [r for r in rows if not r["disabled"]]
-            if search:
-                needle = search.casefold()
-                rows = [r for r in rows if self._matches(r, needle)]
-            return len(rows)
+            return len(self._filtered_mem_rows(include_disabled, search))
 
         import sqlalchemy as sa
 
-        stmt = sa.select(sa.func.count()).select_from(self._table)  # type: ignore[arg-type]
-        if not include_disabled:
-            stmt = stmt.where(self._table.c.disabled.is_(False))  # type: ignore[union-attr]
-        if search:
-            stmt = stmt.where(self._search_clause(search))
+        stmt = sa.select(sa.func.count()).select_from(self._table).where(*self._sql_filters(include_disabled, search))  # type: ignore[arg-type]
         with self._engine.connect() as conn:  # type: ignore[union-attr]
             return int(conn.execute(stmt).scalar() or 0)
 

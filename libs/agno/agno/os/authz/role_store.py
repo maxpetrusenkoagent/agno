@@ -34,6 +34,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from agno.os.authz._db import engine_from_db as _engine_from_db
+from agno.os.authz.audit import DEFAULT_AUDIT_SORT_FIELD, DEFAULT_AUDIT_SORT_ORDER
 from agno.os.authz.engine import EngineAuthorizationProvider, PolicyEngine
 
 if TYPE_CHECKING:
@@ -419,21 +420,30 @@ class ManagedRoleStore:
         return self._engine.roles_of(subject)
 
     # ------------------------------------------------------------------ audit
-    def audit_log(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
-        """A page of change-audit events (newest first), if the audit sink supports
-        reading (e.g. ``DbAuditSink``). Returns ``[]`` when no readable sink is
-        configured (e.g. a logging-only sink, or no audit at all)."""
+    def audit_log(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        search: Optional[str] = None,
+        sort_by: str = DEFAULT_AUDIT_SORT_FIELD,
+        order: str = DEFAULT_AUDIT_SORT_ORDER,
+    ) -> List[Dict[str, Any]]:
+        """A page of change-audit events (newest first by default), if the audit
+        sink supports reading (e.g. ``DbAuditSink``). ``search`` filters over
+        actor/action/target; ``sort_by`` is any of the sink's sortable fields.
+        Returns ``[]`` when no readable sink is configured (e.g. a logging-only
+        sink, or no audit at all)."""
         sink = self._audit
         if sink is not None and hasattr(sink, "read"):
-            return sink.read(limit, offset=offset)
+            return sink.read(limit, offset=offset, search=search, sort_by=sort_by, order=order)
         return []
 
-    def audit_count(self) -> int:
-        """Total number of change-audit events (for pagination); 0 when the sink
-        isn't readable."""
+    def audit_count(self, search: Optional[str] = None) -> int:
+        """Total number of change-audit events (for pagination, honouring
+        ``search``); 0 when the sink isn't readable."""
         sink = self._audit
         if sink is not None and hasattr(sink, "count"):
-            return int(sink.count())
+            return int(sink.count(search=search))
         return 0
 
     # ----------------------------------------------------------------- gating

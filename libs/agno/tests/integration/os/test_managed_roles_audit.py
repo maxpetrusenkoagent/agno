@@ -341,6 +341,21 @@ def test_audit_endpoint_returns_trail(tmp_path):
     assert paged["data"][0]["action"] == events[1]["action"]
     assert paged["meta"]["total_count"] == len(events) and paged["meta"]["page"] == 2
 
+    # search filters over actor/action/target (case-insensitive), counted in meta
+    found = client.get("/authz/audit?search=SET_SCOPES", headers=_auth("alice")).json()
+    assert found["data"] and all(e["action"] == "role.set_scopes" for e in found["data"])
+    assert found["meta"]["total_count"] == len(found["data"])
+    assert client.get("/authz/audit?search=zzz-no-match", headers=_auth("alice")).json()["data"] == []
+
+    # sort_order=asc flips to oldest first
+    asc = client.get("/authz/audit?sort_order=asc", headers=_auth("alice")).json()["data"]
+    assert [e["action"] for e in asc] == [e["action"] for e in reversed(events)]
+
+    # sort_by any sortable field; an unknown field is a 422, not a 500
+    by_action = client.get("/authz/audit?sort_by=action&sort_order=asc", headers=_auth("alice")).json()["data"]
+    assert [e["action"] for e in by_action] == sorted(e["action"] for e in events)
+    assert client.get("/authz/audit?sort_by=evil", headers=_auth("alice")).status_code == 422
+
     # non-admin and anonymous are blocked
     store.assign("bob", "runner")  # bob still isn't an admin
     assert client.get("/authz/audit", headers=_auth("bob")).status_code == 403
