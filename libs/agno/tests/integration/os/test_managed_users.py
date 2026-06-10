@@ -166,9 +166,20 @@ def test_users_api_crud_and_role_merge():
     nothing = client.get("/authz/users?search=zzz-no-match", headers=_auth("alice")).json()
     assert nothing["data"] == [] and nothing["meta"]["total_count"] == 0
 
-    # update + delete
+    # sorting: any USER_SORT_FIELDS member, asc/desc; unknown field is a 422
+    client.post("/authz/users", headers=_auth("alice"), json={"id": "ann", "email": "ann@co"})
+    by_id = client.get("/authz/users?sort_by=id&sort_order=asc", headers=_auth("alice")).json()["data"]
+    assert [u["id"] for u in by_id] == sorted(u["id"] for u in by_id)
+    assert client.get("/authz/users?sort_by=evil", headers=_auth("alice")).status_code == 422
+
+    # update + delete; PATCH {"disabled": ...} is the revocation kill-switch
     client.patch("/authz/users/bob", headers=_auth("alice"), json={"name": "Bob"})
     assert client.get("/authz/users/bob", headers=_auth("alice")).json()["name"] == "Bob"
+    disabled = client.patch("/authz/users/bob", headers=_auth("alice"), json={"disabled": True}).json()
+    assert disabled["status"] == "disabled" and disabled["disabled"] is True
+    assert users.is_disabled("bob") is True
+    enabled = client.patch("/authz/users/bob", headers=_auth("alice"), json={"disabled": False}).json()
+    assert enabled["status"] == "active" and users.is_disabled("bob") is False
     assert client.delete("/authz/users/bob", headers=_auth("alice")).json()["deleted"] is True
     assert client.get("/authz/users/bob", headers=_auth("alice")).status_code == 404
 

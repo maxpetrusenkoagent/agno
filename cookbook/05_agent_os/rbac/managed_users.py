@@ -112,17 +112,17 @@ if __name__ == "__main__":
     print("\n  the directory (asked for by alice, an admin):")
     listing = client.get("/authz/users", headers=auth("alice")).json()["data"]  # paginated {data, meta}
     for u in listing:
-        print(f"    - {u['id']:8s} {str(u['email'] or ''):12s} roles={u['roles']}  disabled={u['disabled']}")
+        print(f"    - {u['id']:8s} {str(u['email'] or ''):12s} role={u['role']}  disabled={u['disabled']}")
 
     print("\n  bob is a viewer, so he can look at the agent:")
     show("bob asks to LOOK at the agent", client.get("/agents/research-agent", headers=auth("bob")), "viewers can look")
 
     print("\n  >> now an admin DISABLES bob (e.g. he left the company)...\n")
-    client.post("/authz/users/bob/disable", headers=auth("alice"))
+    client.patch("/authz/users/bob", headers=auth("alice"), json={"disabled": True})
     show("bob asks to LOOK at the agent", client.get("/agents/research-agent", headers=auth("bob")), "same valid token, but he's blocked now")
 
     print("\n  >> ...bob is back, re-enable him...\n")
-    client.post("/authz/users/bob/enable", headers=auth("alice"))
+    client.patch("/authz/users/bob", headers=auth("alice"), json={"disabled": False})
     show("bob asks to LOOK at the agent", client.get("/agents/research-agent", headers=auth("bob")), "allowed again, instantly")
 
     print("=" * 80)

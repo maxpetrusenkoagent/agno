@@ -36,6 +36,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 if TYPE_CHECKING:
     from agno.os.authz.audit import AuditSink
 
+# The directory's list contract: which fields a page can be sorted by / searched
+# over, and the defaults. The roles router validates request params against
+# these, so they have one owner.
+USER_SORT_FIELDS = ("created_at", "updated_at", "id", "email", "name")
+USER_SEARCH_FIELDS = ("id", "email", "name")
+DEFAULT_USER_SORT_FIELD = "created_at"
+DEFAULT_USER_SORT_ORDER = "desc"
+
 
 def _now() -> int:
     return int(time.time())
@@ -252,7 +260,7 @@ class ManagedUserStore:
     # whichever backend is active; these two helpers are that shared filtering.
     def _filtered_mem_rows(self, include_disabled: bool, search: Optional[str]) -> List[dict]:
         def matches(row: dict, needle: str) -> bool:
-            return any(needle in (row.get(f) or "").casefold() for f in ("id", "email", "name"))
+            return any(needle in (row.get(f) or "").casefold() for f in USER_SEARCH_FIELDS)
 
         rows = list(self._mem.values())  # type: ignore[union-attr]
         if not include_disabled:
@@ -270,8 +278,7 @@ class ManagedUserStore:
             clauses.append(self._table.c.disabled.is_(False))  # type: ignore[union-attr]
         if search:
             pattern = f"%{search}%"
-            cols = (self._table.c.id, self._table.c.email, self._table.c.name)  # type: ignore[union-attr]
-            clauses.append(sa.or_(*(c.ilike(pattern) for c in cols)))
+            clauses.append(sa.or_(*(self._table.c[f].ilike(pattern) for f in USER_SEARCH_FIELDS)))  # type: ignore[index]
         return clauses
 
     def list(
@@ -280,24 +287,37 @@ class ManagedUserStore:
         include_disabled: bool = True,
         offset: int = 0,
         search: Optional[str] = None,
+        sort_by: str = DEFAULT_USER_SORT_FIELD,
+        order: str = DEFAULT_USER_SORT_ORDER,
     ) -> List[dict]:
-        """A page of users (newest first), optionally excluding disabled ones.
+        """A page of users, optionally excluding disabled ones.
 
         ``offset``/``limit`` page in the store so callers don't materialise the
         whole directory; pair with :meth:`count` for the total. ``search``
-        filters case-insensitively by substring across id, email, and name."""
+        filters case-insensitively by substring across id, email, and name;
+        ``sort_by`` is any of :data:`USER_SORT_FIELDS` (newest first by default)."""
+        if sort_by not in USER_SORT_FIELDS:
+            raise ValueError(f"sort_by must be one of {USER_SORT_FIELDS}, got {sort_by!r}")
+        descending = order != "asc"
         if self._mem is not None:
-            rows = sorted(
-                self._filtered_mem_rows(include_disabled, search), key=lambda r: r["created_at"], reverse=True
+            # Rows missing the field (email/name are optional) go last in either
+            # direction, matching the nullslast() on the SQL path.
+            rows = self._filtered_mem_rows(include_disabled, search)
+            present = sorted(
+                (r for r in rows if r.get(sort_by) is not None), key=lambda r: r[sort_by], reverse=descending
             )
-            return [dict(r) for r in rows[offset : offset + limit]]
+            missing = [r for r in rows if r.get(sort_by) is None]
+            return [dict(r) for r in (present + missing)[offset : offset + limit]]
 
         import sqlalchemy as sa
 
+        sort_col = self._table.c[sort_by]  # type: ignore[index]
         stmt = (
             sa.select(self._table)
             .where(*self._sql_filters(include_disabled, search))
-            .order_by(self._table.c.created_at.desc())  # type: ignore[union-attr]
+            # nullslast: backends disagree on NULL placement (and email/name are
+            # nullable); pin them last in either direction.
+            .order_by(sa.nullslast(sort_col.desc() if descending else sort_col.asc()))
             .limit(limit)
             .offset(offset)
         )

@@ -40,6 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from agno.os.authz.audit import AUDIT_SORT_FIELDS, DEFAULT_AUDIT_SORT_FIELD
+from agno.os.authz.user_store import DEFAULT_USER_SORT_FIELD, USER_SORT_FIELDS
 from agno.os.schema import PaginatedResponse, PaginationInfo, SortOrder
 from agno.os.scopes import AgentOSScope
 
@@ -194,6 +195,9 @@ class CreateUserRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     email: Optional[str] = Field(None, description="New email")
     name: Optional[str] = Field(None, description="New display name")
+    disabled: Optional[bool] = Field(
+        None, description="Set the revocation kill-switch: true denies the user on every request, false re-enables"
+    )
 
 
 def _paginated(data: list, page: int, limit: int, total: int, search_time_ms: float = 0) -> PaginatedResponse:
@@ -427,15 +431,24 @@ def get_roles_router(
             limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
             page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
             search: Optional[str] = Query(default=None, description="Filter by id/email/name (case-insensitive substring)"),
+            sort_by: str = Query(default=DEFAULT_USER_SORT_FIELD, description="Field to sort by"),
+            sort_order: SortOrder = Query(default=SortOrder.DESC, description="Sort order (asc or desc)"),
         ):
+            if sort_by not in USER_SORT_FIELDS:
+                raise HTTPException(status_code=422, detail=f"sort_by must be one of {list(USER_SORT_FIELDS)}")
             # Paginate in the store (offset/limit + count) so we don't materialise
             # the whole directory and resolve roles for every user on each call.
             # `search` filters before pagination, so meta counts the matches.
+            start_ms = time.time() * 1000
             rows = user_store.list(
-                limit=limit, offset=(page - 1) * limit, include_disabled=include_disabled, search=search
+                limit=limit, offset=(page - 1) * limit, include_disabled=include_disabled,
+                search=search, sort_by=sort_by, order=sort_order.value,
             )
             total = user_store.count(include_disabled=include_disabled, search=search)
-            return _paginated([_user(u) for u in rows], page, limit, total)
+            return _paginated(
+                [_user(u) for u in rows], page, limit, total,
+                search_time_ms=round(time.time() * 1000 - start_ms, 2),
+            )
 
         @router.post("/users", response_model=AuthzUserSchema)
         def create_user(body: CreateUserRequest, actor: str = Depends(require_admin)):
@@ -450,21 +463,17 @@ def get_roles_router(
 
         @router.patch("/users/{user_id}", response_model=AuthzUserSchema)
         def update_user(user_id: str, body: UpdateUserRequest, actor: str = Depends(require_admin)):
-            return _user(user_store.upsert(user_id, email=body.email, name=body.name, actor=actor))
+            """Update a user. ``disabled`` is the revocation kill-switch: a disabled
+            user is denied at the enforcement point on their next request, even
+            with a still-valid token."""
+            user = user_store.upsert(user_id, email=body.email, name=body.name, actor=actor)
+            if body.disabled is not None and body.disabled != user["disabled"]:
+                user = user_store.set_disabled(user_id, body.disabled, actor=actor)
+            return _user(user)
 
         @router.delete("/users/{user_id}")
         def delete_user(user_id: str, actor: str = Depends(require_admin)) -> dict:
             deleted = user_store.remove(user_id, actor=actor)
             return {"id": user_id, "deleted": deleted}
-
-        @router.post("/users/{user_id}/disable", response_model=AuthzUserSchema)
-        def disable_user(user_id: str, actor: str = Depends(require_admin)):
-            """Revoke a user: they are denied at the enforcement point on their next
-            request, even with a still-valid token."""
-            return _user(user_store.set_disabled(user_id, True, actor=actor))
-
-        @router.post("/users/{user_id}/enable", response_model=AuthzUserSchema)
-        def enable_user(user_id: str, actor: str = Depends(require_admin)):
-            return _user(user_store.set_disabled(user_id, False, actor=actor))
 
     return router

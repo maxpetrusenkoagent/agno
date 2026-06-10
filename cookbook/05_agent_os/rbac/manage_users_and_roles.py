@@ -11,14 +11,14 @@ scopes) and on its own (end users managed in the OS-local store) - both at once.
 
 What it serves (all admin-only):
     GET    /authz/roles                 list roles
-    PUT    /authz/roles/{role}          set what a role can do
+    POST   /authz/roles                 create a role (PUT/PATCH .../{slug}/scopes for permissions)
     GET    /authz/scopes                the permission catalog (for a UI grid)
-    GET    /authz/users                 list users (with their roles)
+    GET    /authz/users                 list users (one role each; search/sort/paginate)
     POST   /authz/users                 add a user
-    POST   /authz/users/{id}/roles      give a user a role
-    POST   /authz/users/{id}/disable    revoke a user (blocked on next request)
-    GET    /authz/audit                 the change trail
-    GET    /authz/decisions             the access trail
+    POST   /authz/users/{id}/roles      set a user's role (replaces)
+    PATCH  /authz/users/{id}            update; {"disabled": true} revokes on next request
+    GET    /authz/audit                 the change trail (search/sort/paginate)
+    GET    /authz/decisions             the access trail (search/sort/paginate)
 
 It seeds a couple of roles and users so the frontend has something to show, and
 makes ONE bootstrap admin (so someone can call the admin API).
