@@ -122,7 +122,7 @@ def test_admin_assign_and_revoke(client_and_store):
     client, store = client_and_store
     r = client.post("/authz/users/carol/roles", headers=_auth("alice"), json={"role": "viewer"})
     assert r.status_code == 200
-    assert r.json()["roles"] == ["viewer"]
+    assert r.json()["role"] == "viewer"  # singular: one role per user
     assert store.roles_of("carol") == ["viewer"]
 
     r = client.delete("/authz/users/carol/roles/viewer", headers=_auth("alice"))

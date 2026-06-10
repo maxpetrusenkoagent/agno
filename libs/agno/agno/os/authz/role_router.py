@@ -103,26 +103,26 @@ class RoleSchema(BaseModel):
 
 
 class AuthzUserSchema(BaseModel):
-    """A directory user with roles merged in."""
+    """A directory user with their role merged in (one role per user)."""
 
     id: str = Field(description="User id (the JWT 'sub')")
     email: Optional[str] = None
     name: Optional[str] = None
     status: str = Field(description="'active' or 'disabled'")
     disabled: bool = False
-    roles: List[str] = Field(default_factory=list, description="Roles assigned to this user")
+    role: Optional[str] = Field(None, description="The user's role slug (one role per user), or null")
     created_at: Optional[int] = None
     updated_at: Optional[int] = None
 
     @classmethod
-    def from_user(cls, user: dict, roles: List[str]) -> "AuthzUserSchema":
+    def from_user(cls, user: dict, role: Optional[str]) -> "AuthzUserSchema":
         return cls(
             id=user["id"],
             email=user.get("email"),
             name=user.get("name"),
             status="disabled" if user.get("disabled") else "active",
             disabled=bool(user.get("disabled")),
-            roles=roles,
+            role=role,
             created_at=user.get("created_at"),
             updated_at=user.get("updated_at"),
         )
@@ -335,40 +335,69 @@ def get_roles_router(
         return [AvailableScopeItem.from_raw(r) for r in sorted(raws)]
 
     # ---- audit ----------------------------------------------------------
+    def _paged_events(items: list, page: int, limit: int, total: int) -> PaginatedResponse:
+        return PaginatedResponse(
+            data=items,
+            meta=PaginationInfo(
+                page=page,
+                limit=limit,
+                total_count=total,
+                total_pages=(total + limit - 1) // limit if limit > 0 else 0,
+            ),
+        )
+
     @router.get("/audit")
-    def list_audit(limit: int = Query(default=100, ge=1, le=1000)) -> dict:
-        """Recent *change* events (role/assignment mutations, newest first). Empty
-        unless the store was given a readable audit sink (e.g. DbAuditSink)."""
-        return {"events": store.audit_log(limit)}
+    def list_audit(
+        limit: int = Query(default=100, ge=1, le=1000),
+        page: int = Query(default=1, ge=1, description="Page number"),
+    ) -> PaginatedResponse:
+        """*Change* events (role/assignment mutations, newest first), paginated
+        ``{data, meta}``. Empty unless the store was given a readable audit sink
+        (e.g. DbAuditSink)."""
+        events = store.audit_log(limit, offset=(page - 1) * limit)
+        return _paged_events(events, page, limit, store.audit_count())
 
     @router.get("/decisions")
-    def list_decisions(request: Request, limit: int = Query(default=100, ge=1, le=1000)) -> dict:
-        """Recent *decision* events (allow/deny per request, newest first).
+    def list_decisions(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=1000),
+        page: int = Query(default=1, ge=1, description="Page number"),
+    ) -> PaginatedResponse:
+        """*Decision* events (allow/deny per request, newest first), paginated
+        ``{data, meta}``.
 
         Decision audit is configured on ``AuthorizationConfig(audit=...)`` and lands
         on ``app.state.authz_audit`` — a separate table from the change trail above,
         so a high-volume decision log never buries the change history. Empty unless a
         readable decision sink (e.g. DbAuditSink) is configured."""
         sink = getattr(request.app.state, "authz_audit", None)
-        events = sink.read_decisions(limit) if sink is not None and hasattr(sink, "read_decisions") else []
-        return {"events": events}
+        if sink is None or not hasattr(sink, "read_decisions"):
+            return _paged_events([], page, limit, 0)
+        events = sink.read_decisions(limit, offset=(page - 1) * limit)
+        total = sink.count_decisions() if hasattr(sink, "count_decisions") else len(events)
+        return _paged_events(events, page, limit, total)
 
     # ---- assignments ----------------------------------------------------
+    def _role_of(subject: str) -> Optional[str]:
+        """The subject's single role, or None (one role per user)."""
+        roles = store.roles_of(subject)
+        return roles[0] if roles else None
+
     @router.get("/users/{subject}/roles")
-    def get_user_roles(subject: str) -> dict:
-        return {"subject": subject, "roles": store.roles_of(subject)}
+    def get_user_role(subject: str) -> dict:
+        return {"subject": subject, "role": _role_of(subject)}
 
     @router.post("/users/{subject}/roles")
     def assign_role(subject: str, body: AssignRoleRequest, actor: str = Depends(require_admin)) -> dict:
         """Set the subject's role. One role per subject: this REPLACES any
         current role (a role select in a UI, not a multi-grant)."""
         store.assign(subject, body.role, actor=actor)
-        return {"subject": subject, "roles": store.roles_of(subject)}
+        return {"subject": subject, "role": _role_of(subject)}
 
     @router.delete("/users/{subject}/roles/{role}")
     def revoke_role(subject: str, role: str, actor: str = Depends(require_admin)) -> dict:
         store.unassign(subject, role, actor=actor)
-        return {"subject": subject, "roles": store.roles_of(subject)}
+        return {"subject": subject, "role": _role_of(subject)}
 
     # ---- user directory (no-IdP) ---------------------------------------
     # Only mounted when a user_store is supplied. Identity is still asserted by
@@ -376,19 +405,21 @@ def get_roles_router(
     if user_store is not None:
 
         def _user(user: dict) -> AuthzUserSchema:
-            return AuthzUserSchema.from_user(user, store.roles_of(user["id"]))
+            return AuthzUserSchema.from_user(user, _role_of(user["id"]))
 
         @router.get("/users", response_model=PaginatedResponse[AuthzUserSchema])
         def list_users(
             include_disabled: bool = True,
             limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
             page: int = Query(default=1, ge=1, description="Page number"),
+            search: Optional[str] = Query(default=None, description="Filter by id/email/name (case-insensitive substring)"),
         ):
             # Paginate in the store (offset/limit + count) so we don't materialise
             # the whole directory and resolve roles for every user on each call.
-            total = user_store.count(include_disabled=include_disabled)
+            # `search` filters before pagination, so meta counts the matches.
+            total = user_store.count(include_disabled=include_disabled, search=search)
             rows = user_store.list(
-                limit=limit, offset=(page - 1) * limit, include_disabled=include_disabled
+                limit=limit, offset=(page - 1) * limit, include_disabled=include_disabled, search=search
             )
             return PaginatedResponse(
                 data=[_user(u) for u in rows],

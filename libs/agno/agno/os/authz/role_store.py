@@ -419,14 +419,22 @@ class ManagedRoleStore:
         return self._engine.roles_of(subject)
 
     # ------------------------------------------------------------------ audit
-    def audit_log(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Recent change-audit events (newest first), if the audit sink supports
+    def audit_log(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """A page of change-audit events (newest first), if the audit sink supports
         reading (e.g. ``DbAuditSink``). Returns ``[]`` when no readable sink is
         configured (e.g. a logging-only sink, or no audit at all)."""
         sink = self._audit
         if sink is not None and hasattr(sink, "read"):
-            return sink.read(limit)
+            return sink.read(limit, offset=offset)
         return []
+
+    def audit_count(self) -> int:
+        """Total number of change-audit events (for pagination); 0 when the sink
+        isn't readable."""
+        sink = self._audit
+        if sink is not None and hasattr(sink, "count"):
+            return int(sink.count())
+        return 0
 
     # ----------------------------------------------------------------- gating
     def can_manage(self, principal_id: Optional[str], claims: Optional[Dict[str, Any]] = None) -> bool:

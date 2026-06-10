@@ -196,13 +196,15 @@ class DbAuditSink(AuditSink):
                 )
             )
 
-    def read(self, limit: int = 100) -> List[dict]:
-        """Recent *change* events (newest first) as plain dicts."""
+    def read(self, limit: int = 100, offset: int = 0) -> List[dict]:
+        """A page of *change* events (newest first) as plain dicts."""
         import sqlalchemy as sa
 
         with self._engine.connect() as conn:
             rows = (
-                conn.execute(sa.select(self._table).order_by(self._table.c.id.desc()).limit(limit))
+                conn.execute(
+                    sa.select(self._table).order_by(self._table.c.id.desc()).limit(limit).offset(offset)
+                )
                 .mappings()
                 .all()
             )
@@ -218,8 +220,8 @@ class DbAuditSink(AuditSink):
             for r in rows
         ]
 
-    def read_decisions(self, limit: int = 100) -> List[dict]:
-        """Recent *decision* events (newest first) as plain dicts.
+    def read_decisions(self, limit: int = 100, offset: int = 0) -> List[dict]:
+        """A page of *decision* events (newest first) as plain dicts.
 
         ``metadata`` is reassembled to the same ``{required, token, scopes}`` shape
         the in-memory event carried, so readers don't care which table it came from.
@@ -228,7 +230,9 @@ class DbAuditSink(AuditSink):
 
         with self._engine.connect() as conn:
             rows = (
-                conn.execute(sa.select(self._decisions).order_by(self._decisions.c.id.desc()).limit(limit))
+                conn.execute(
+                    sa.select(self._decisions).order_by(self._decisions.c.id.desc()).limit(limit).offset(offset)
+                )
                 .mappings()
                 .all()
             )
@@ -246,3 +250,17 @@ class DbAuditSink(AuditSink):
             }
             for r in rows
         ]
+
+    def count(self) -> int:
+        """Total number of change events (for pagination)."""
+        import sqlalchemy as sa
+
+        with self._engine.connect() as conn:
+            return int(conn.execute(sa.select(sa.func.count()).select_from(self._table)).scalar() or 0)
+
+    def count_decisions(self) -> int:
+        """Total number of decision events (for pagination)."""
+        import sqlalchemy as sa
+
+        with self._engine.connect() as conn:
+            return int(conn.execute(sa.select(sa.func.count()).select_from(self._decisions)).scalar() or 0)

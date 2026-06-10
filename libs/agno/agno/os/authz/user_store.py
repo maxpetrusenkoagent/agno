@@ -248,15 +248,30 @@ class ManagedUserStore:
             r = conn.execute(sa.select(self._table).where(self._table.c.id == id)).mappings().first()  # type: ignore[union-attr]
         return self._row_to_dict(r) if r else None
 
-    def list(self, limit: int = 1000, include_disabled: bool = True, offset: int = 0) -> List[dict]:
+    @staticmethod
+    def _matches(row: dict, needle: str) -> bool:
+        """Case-insensitive substring match across id / email / name."""
+        return any(needle in (row.get(f) or "").casefold() for f in ("id", "email", "name"))
+
+    def list(
+        self,
+        limit: int = 1000,
+        include_disabled: bool = True,
+        offset: int = 0,
+        search: Optional[str] = None,
+    ) -> List[dict]:
         """A page of users (newest first), optionally excluding disabled ones.
 
         ``offset``/``limit`` page in the store so callers don't materialise the
-        whole directory; pair with :meth:`count` for the total."""
+        whole directory; pair with :meth:`count` for the total. ``search``
+        filters case-insensitively by substring across id, email, and name."""
         if self._mem is not None:
             rows = sorted(self._mem.values(), key=lambda r: r["created_at"], reverse=True)
             if not include_disabled:
                 rows = [r for r in rows if not r["disabled"]]
+            if search:
+                needle = search.casefold()
+                rows = [r for r in rows if self._matches(r, needle)]
             return [dict(r) for r in rows[offset : offset + limit]]
 
         import sqlalchemy as sa
@@ -264,23 +279,43 @@ class ManagedUserStore:
         stmt = sa.select(self._table)
         if not include_disabled:
             stmt = stmt.where(self._table.c.disabled.is_(False))  # type: ignore[union-attr]
+        if search:
+            stmt = stmt.where(self._search_clause(search))
         stmt = stmt.order_by(self._table.c.created_at.desc()).limit(limit).offset(offset)  # type: ignore[union-attr]
         with self._engine.connect() as conn:  # type: ignore[union-attr]
             rows = conn.execute(stmt).mappings().all()
         return [self._row_to_dict(r) for r in rows]
 
-    def count(self, include_disabled: bool = True) -> int:
-        """Total number of users (for pagination), optionally excluding disabled."""
+    def _search_clause(self, search: str):
+        """SQL filter for :meth:`list`/:meth:`count` — ILIKE %term% over id/email/name."""
+        import sqlalchemy as sa
+
+        pattern = f"%{search}%"
+        return sa.or_(
+            self._table.c.id.ilike(pattern),  # type: ignore[union-attr]
+            self._table.c.email.ilike(pattern),  # type: ignore[union-attr]
+            self._table.c.name.ilike(pattern),  # type: ignore[union-attr]
+        )
+
+    def count(self, include_disabled: bool = True, search: Optional[str] = None) -> int:
+        """Total number of users (for pagination), optionally excluding disabled
+        and/or filtered by the same ``search`` as :meth:`list`."""
         if self._mem is not None:
-            if include_disabled:
-                return len(self._mem)
-            return sum(1 for r in self._mem.values() if not r["disabled"])
+            rows = list(self._mem.values())
+            if not include_disabled:
+                rows = [r for r in rows if not r["disabled"]]
+            if search:
+                needle = search.casefold()
+                rows = [r for r in rows if self._matches(r, needle)]
+            return len(rows)
 
         import sqlalchemy as sa
 
         stmt = sa.select(sa.func.count()).select_from(self._table)  # type: ignore[arg-type]
         if not include_disabled:
             stmt = stmt.where(self._table.c.disabled.is_(False))  # type: ignore[union-attr]
+        if search:
+            stmt = stmt.where(self._search_clause(search))
         with self._engine.connect() as conn:  # type: ignore[union-attr]
             return int(conn.execute(stmt).scalar() or 0)
 

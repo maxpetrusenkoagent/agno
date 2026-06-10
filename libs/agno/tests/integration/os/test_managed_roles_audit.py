@@ -279,14 +279,16 @@ def test_decisions_endpoint_returns_trail_for_admin(tmp_path):
 
     client.get("/agents/research-agent", headers=_auth("bob", jti="dec-1"))  # allowed decision
 
-    # admin reads the decision trail
+    # admin reads the decision trail (paginated {data, meta})
     r = client.get("/authz/decisions", headers=_auth("alice"))
     assert r.status_code == 200
-    events = r.json()["events"]
+    body = r.json()
+    events = body["data"]
+    assert body["meta"]["total_count"] >= len(events)
     assert any(e["action"] == "access.allowed" and e["metadata"]["token"] == "dec-1" for e in events)
 
     # /authz/audit (changes) does NOT contain the access.* decisions
-    changes = client.get("/authz/audit", headers=_auth("alice")).json()["events"]
+    changes = client.get("/authz/audit", headers=_auth("alice")).json()["data"]
     assert all(not e["action"].startswith("access.") for e in changes)
 
     # non-admin and anonymous are blocked
@@ -323,13 +325,21 @@ def test_audit_endpoint_returns_trail(tmp_path):
     client.put("/authz/roles/runner/scopes", headers=_auth("alice"), json={"scopes": ["agents:*:run"]})
     client.post("/authz/users/bob/roles", headers=_auth("alice"), json={"role": "runner"})
 
-    # admin can read the trail; newest first
+    # admin can read the trail; newest first, paginated {data, meta}
     r = client.get("/authz/audit", headers=_auth("alice"))
     assert r.status_code == 200
-    events = r.json()["events"]
+    body = r.json()
+    events = body["data"]
+    assert body["meta"]["page"] == 1 and body["meta"]["total_count"] == len(events)
     assert events[0]["action"] == "user.assigned" and events[0]["actor"] == "alice"
     assert events[0]["after"] == ["runner"]
     assert any(e["action"] == "role.set_scopes" and e["target"] == "runner" for e in events)
+
+    # page/limit slice the trail (page 2 with limit 1 = the second-newest event)
+    paged = client.get("/authz/audit?limit=1&page=2", headers=_auth("alice")).json()
+    assert len(paged["data"]) == 1
+    assert paged["data"][0]["action"] == events[1]["action"]
+    assert paged["meta"]["total_count"] == len(events) and paged["meta"]["page"] == 2
 
     # non-admin and anonymous are blocked
     store.assign("bob", "runner")  # bob still isn't an admin

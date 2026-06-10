@@ -148,16 +148,23 @@ def test_users_api_crud_and_role_merge():
     # create a user
     r = client.post("/authz/users", headers=_auth("alice"), json={"id": "bob", "email": "bob@co"})
     assert r.status_code == 200, r.text
-    assert r.json()["id"] == "bob" and r.json()["roles"] == [] and r.json()["status"] == "active"
+    assert r.json()["id"] == "bob" and r.json()["role"] is None and r.json()["status"] == "active"
 
-    # give bob a role; the user view merges it in
+    # give bob a role; the user view merges it in (singular: one role per user)
     roles.assign("bob", "viewer")
     got = client.get("/authz/users/bob", headers=_auth("alice")).json()
-    assert got["email"] == "bob@co" and got["roles"] == ["viewer"]
+    assert got["email"] == "bob@co" and got["role"] == "viewer"
 
-    # list is paginated ({data, meta}) and includes bob with roles
+    # list is paginated ({data, meta}) and includes bob with his role
     listed = client.get("/authz/users", headers=_auth("alice")).json()["data"]
-    assert any(u["id"] == "bob" and u["roles"] == ["viewer"] for u in listed)
+    assert any(u["id"] == "bob" and u["role"] == "viewer" for u in listed)
+
+    # fuzzy search filters by id/email/name, case-insensitive, before pagination
+    found = client.get("/authz/users?search=BOB", headers=_auth("alice")).json()
+    assert [u["id"] for u in found["data"]] == ["bob"] and found["meta"]["total_count"] == 1
+    assert [u["id"] for u in client.get("/authz/users?search=bob@co", headers=_auth("alice")).json()["data"]] == ["bob"]
+    nothing = client.get("/authz/users?search=zzz-no-match", headers=_auth("alice")).json()
+    assert nothing["data"] == [] and nothing["meta"]["total_count"] == 0
 
     # update + delete
     client.patch("/authz/users/bob", headers=_auth("alice"), json={"name": "Bob"})
