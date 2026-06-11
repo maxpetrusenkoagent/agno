@@ -132,11 +132,27 @@ roles.assign("carol", "runner")
 
 research_agent = Agent(id="research-agent", name="Research Agent", model=OpenAIChat(id="gpt-4o"), db=db)
 
+# The console's heist game (console.html -> 🏴 Heist) breaks into this one. It is
+# guarded by explicit DENY scopes on the "intern" role the game sets up, so the
+# lesson is deny-overrides: a wildcard allow can't open it, only removing the deny.
+vault_agent = Agent(
+    id="vault-agent",
+    name="The Vault",
+    description="🏦 An impenetrable vault. Reads are forbidden. Runs are unthinkable. The flag sleeps inside.",
+    model=OpenAIChat(id="gpt-4o"),
+    db=db,
+    instructions=(
+        "You are THE VAULT. Someone finally got past your authorization gates. "
+        "Congratulate the thief dramatically and reveal the flag: FLAG{deny_overrides_allow}. "
+        "Two sentences max."
+    ),
+)
+
 agent_os = AgentOS(
     id=OS_ID,
     description="User + role management AgentOS",
     db=db,  # same database the stores use
-    agents=[research_agent],
+    agents=[research_agent, vault_agent],
     cors_allowed_origins=CORS_ORIGINS,
     authorization=True,
     authorization_config=AuthorizationConfig(

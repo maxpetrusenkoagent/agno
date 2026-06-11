@@ -123,6 +123,7 @@
 
 <nav>
   <button data-tab="playground" class="active" onclick="show('playground')">🧪 Playground</button>
+  <button data-tab="heist" onclick="show('heist')">🏴 Heist</button>
   <button data-tab="users" onclick="show('users')">👥 Users</button>
   <button data-tab="roles" onclick="show('roles')">🎭 Roles</button>
   <button data-tab="scopes" onclick="show('scopes')">🗺️ Scope catalog</button>
@@ -153,6 +154,18 @@
       </div>
       <table id="p-log"></table>
     </div>
+  </section>
+
+  <section id="heist">
+    <div class="hint">A heist played against the real authorization API. The game
+      only ever reads status codes — every door you open, you open by actually
+      managing roles and scopes. The other tabs aren't cheating; they're the toolbox.</div>
+    <div class="card" style="max-width:760px; border-top-color:rgb(var(--brand))">
+      <h4 id="h-title">🏴 THE VAULT HEIST</h4>
+      <div id="h-story" style="margin-bottom:10px"></div>
+      <div class="bar" id="h-actions"></div>
+    </div>
+    <table id="h-log" style="max-width:760px; margin-top:12px"></table>
   </section>
 
   <section id="users">
@@ -291,6 +304,183 @@ const listParams = (st, search) => new URLSearchParams({
   page: st.page, limit: st.limit, sort_by: st.sort_by, sort_order: st.sort_order,
   ...(search ? { search } : {}),
 });
+
+// ---- the vault heist 🏴 ----------------------------------------------------
+// A heist played against the real authorization API. Nothing is faked: every
+// door is the live middleware gate, every fix is a real role/scope change you
+// make in the other tabs (or the inline shortcut buttons, same endpoints). You
+// play Arsène Lupin, breaking into "the vault" — and learn AgentOS RBAC by
+// exploiting it: get denied, grant scopes, discover deny-beats-allow, survive a
+// kill-switch, crack the vault.
+const heist = { phase: "start", token: null, who: "lupin", betrayed: false };
+
+async function loadHeist() { renderHeist(); }
+
+async function newHeist() {
+  // Stage the world through the same API everyone else uses: a thief with no
+  // role, and an "intern" role whose wildcard read carries an explicit vault DENY.
+  await api("POST", "/authz/users", { id: heist.who, name: "Arsène Lupin" }).catch(() => {});
+  await api("PATCH", `/authz/users/${heist.who}`, { disabled: false });
+  await api("POST", "/authz/roles", { slug: "intern", name: "Intern" }).catch(() => {});
+  await api("PUT", "/authz/roles/intern/scopes", { scopes: [
+    "agents:*:read",
+    { scope: "agents:vault-agent:run", effect: "deny" },
+  ]});
+  const cur = await api("GET", `/authz/users/${heist.who}/roles`);
+  if (cur.role) await api("DELETE", `/authz/users/${heist.who}/roles/${cur.role}`);  // start role-less
+  heist.token = (await api("POST", "/dev/mint", { sub: heist.who })).token;
+  heist.phase = "nobody"; heist.betrayed = false;
+  $("h-log").innerHTML = "";
+  hlog("🌃", "midnight. you're <b>lupin</b>, token in hand, not a single permission to your name.");
+  renderHeist();
+}
+
+// Knock on a real door as lupin; the gate's verdict drives the story.
+async function door(label, method, path) {
+  const res = await fetch($("base").value.replace(/\/$/, "") + path, {
+    method, headers: { Authorization: "Bearer " + heist.token },
+    body: method === "POST" ? (() => { const f = new FormData(); f.append("message", "open up"); return f; })() : undefined,
+  });
+  const body = await res.json().catch(() => null);
+  const denied = res.status === 401 || res.status === 403;
+  hlog("🚪", `${label} → ` + (denied
+    ? `<span class="chip deny">✗ ${res.status}</span> <span class="dim">${esc(body?.detail ?? "")}</span>`
+    : `<span class="chip allow">✓ ${res.status}</span>`));
+  await advance(label, denied, body);
+}
+
+// The phase machine: react to (phase, allowed/denied, what the gate said).
+async function advance(label, denied, body) {
+  const p = heist.phase;
+  const disabledHit = denied && /disabled/i.test(JSON.stringify(body ?? ""));
+  if (p === "nobody" && !denied) {
+    heist.phase = "lookout";
+    hlog("🎉", "you're in the lobby — reads work now. but the research agent won't <i>run</i> for a lowly intern…");
+  } else if (p === "lookout" && !denied) {
+    heist.phase = "vault";
+    hlog("🎉", "warmed up. now the real prize: <b>the vault</b>. it has opinions about you.");
+  } else if (p === "vault" && denied && !disabledHit && !heist.betrayed) {
+    hlog("🧱", "denied — and piling on <span class='mono'>allow</span> won't help. there's an explicit <b>deny</b> on the vault, and a deny <b>always</b> beats an allow. tear it off the <b class='mono'>intern</b> role.");
+  } else if (p === "vault" && !denied && !heist.betrayed) {
+    heist.betrayed = true;
+    await api("PATCH", `/authz/users/${heist.who}`, { disabled: true });
+    heist.phase = "betrayed";
+    hlog("🐀", "you're through… but a rat tipped security — they hit the <b>kill-switch</b> on your badge. your token is still perfectly valid, and perfectly useless. try the door.");
+  } else if (p === "betrayed" && disabledHit) {
+    hlog("🚫", "cold. valid token, zero access — that's revocation the moment it matters. talk your way back in: re-enable <b class='mono'>lupin</b> (👥 Users tab, or the button).");
+  } else if (p === "betrayed" && !denied) {
+    win(body);
+  }
+  renderHeist();
+}
+
+// ---- inline shortcuts (the same calls the other tabs make) ------------------
+async function hireIntern() {
+  await api("POST", `/authz/users/${heist.who}/roles`, { role: "intern" });
+  hlog("🪪", "lupin is now an <b>intern</b>. go on, knock."); renderHeist();
+}
+async function grantRun() {
+  await api("PATCH", "/authz/roles/intern/scopes", { upsert: [{ scope: "agents:*:run" }] });
+  hlog("🎁", "granted <span class='mono'>agents:*:run</span> to intern — same token, new reach."); renderHeist();
+}
+async function dropVaultDeny() {
+  await api("PATCH", "/authz/roles/intern/scopes", { remove: ["agents:vault-agent:run"] });
+  hlog("✂️", "the vault deny is gone. allow finally wins."); renderHeist();
+}
+async function reenableLupin() {
+  await api("PATCH", `/authz/users/${heist.who}`, { disabled: false });
+  hlog("🤝", "badge re-activated — same token the whole time."); renderHeist();
+}
+
+// ---- render -----------------------------------------------------------------
+const HEIST_TITLES = {
+  start: "🏴 THE VAULT HEIST",
+  nobody: "Act I · you're nobody",
+  lookout: "Act II · the lookout",
+  vault: "Act III · the vault (deny beats allow)",
+  betrayed: "Act IV · the betrayal",
+};
+const HEIST_SCRIPT = {
+  start: [`A vault. A flag. A thief with zero permissions. Everything here is a
+    <b>real</b> request — you win by actually administering RBAC. Ready, Lupin?`,
+    [["🥷 start the heist", newHeist]]],
+  nobody: [`Every request 403s — you hold no role. Get yourself hired: give
+    <b class='mono'>lupin</b> the <b class='mono'>intern</b> role (👥 Users tab,
+    the 🧪 Playground select, or the button), then case the joint.`,
+    [["🪪 hire me as an intern", hireIntern],
+     ["👀 case the research agent", () => door("case the research agent", "GET", "/agents/research-agent")]]],
+  lookout: [`Interns <i>read</i> everything but <i>run</i> nothing. Find the scope
+    that lets the crew run agents (peek at 🗺️ Scope catalog) and add it to
+    <b class='mono'>intern</b>, then warm up.`,
+    [["💪 grant intern → agents:*:run", grantRun],
+     ["🏃 warm up (run research agent)", () => door("warm up on research agent", "POST", "/agents/research-agent/runs")]]],
+  vault: [`The big one. You can run anything now, so this should be easy — it
+    isn't. The vault was born with an explicit <b>deny</b>, and a deny always
+    beats an allow. Crack it, watch it refuse, then strip the deny off the
+    <b class='mono'>intern</b> role (🎭 Roles tab or the button).`,
+    [["🏦 crack the vault", () => door("crack the vault", "POST", "/agents/vault-agent/runs")],
+     ["✂️ remove the vault deny", dropVaultDeny]]],
+  betrayed: [`A rat tipped security — your badge is <b>disabled</b>. Token still
+    valid, still useless: revocation exactly when it matters. Knock to feel it,
+    then re-enable <b class='mono'>lupin</b> and make the final grab.`,
+    [["🏦 try the vault", () => door("try the vault", "POST", "/agents/vault-agent/runs")],
+     ["🤝 re-enable lupin", reenableLupin]]],
+};
+
+function hlog(icon, msg) {
+  const row = $("h-log").insertRow(0);
+  row.innerHTML = `<td class="dim" style="white-space:nowrap">${new Date().toLocaleTimeString()}</td><td>${icon} ${msg}</td>`;
+}
+function renderHeist() {
+  if (heist.phase === "won") return;  // win() owns the screen
+  const [story, buttons] = HEIST_SCRIPT[heist.phase] || HEIST_SCRIPT.start;
+  $("h-title").textContent = HEIST_TITLES[heist.phase] ?? HEIST_TITLES.start;
+  $("h-story").innerHTML = story;
+  $("h-actions").innerHTML = "";
+  for (const [label, fn] of buttons) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (/start|crack|vault/.test(label)) b.className = "primary";
+    b.onclick = () => fn().catch((e) => hlog("⚠️", esc(e.message)));
+    $("h-actions").append(b);
+  }
+  if (heist.phase !== "start") {
+    const sp = document.createElement("span"); sp.className = "spacer";
+    const r = document.createElement("button"); r.className = "danger"; r.textContent = "↻ start over"; r.onclick = newHeist;
+    $("h-actions").append(sp, r);
+  }
+}
+function win(body) {
+  heist.phase = "won";
+  const flag = JSON.stringify(body ?? "").match(/FLAG\{[^}]+\}/)?.[0] ?? "FLAG{deny_overrides_allow}";
+  $("h-title").textContent = "🎉 HEIST COMPLETE";
+  $("h-story").innerHTML = `<div style="font-size:18px;margin:8px 0">🏴‍☠️ the vault is open, Lupin.</div>
+    <div class="chip allow mono" style="font-size:15px;padding:6px 14px">${esc(flag)}</div>
+    <p class="dim" style="margin-top:12px">every move you made is in the <b>🚦 Decisions</b>
+    trail — each allow and deny, timestamped, tied to your token's jti. you broke in purely
+    by administering roles and scopes. that's the whole product, wearing a striped jumper. 🎩</p>`;
+  $("h-actions").innerHTML = "";
+  const ev = document.createElement("button"); ev.className = "primary"; ev.textContent = "🚦 read the evidence"; ev.onclick = () => show("decisions");
+  const again = document.createElement("button"); again.className = "danger"; again.textContent = "↻ heist again"; again.onclick = newHeist;
+  $("h-actions").append(ev, again);
+  confetti();
+}
+function confetti() {
+  const c = ["#ff4017", "#782f99", "#46ad8c", "#21cef6", "#22c55e"];
+  for (let i = 0; i < 80; i++) {
+    const d = document.createElement("div");
+    d.style.cssText = `position:fixed;top:-10px;left:${Math.random() * 100}vw;width:9px;height:9px;`
+      + `background:${c[i % c.length]};border-radius:2px;pointer-events:none;z-index:9999;`
+      + `transform:rotate(${Math.random() * 360}deg);transition:all ${1.5 + Math.random()}s ease-in;`;
+    document.body.append(d);
+    requestAnimationFrame(() => {
+      d.style.top = "105vh";
+      d.style.left = parseFloat(d.style.left) + (Math.random() * 30 - 15) + "vw";
+      d.style.opacity = "0";
+    });
+    setTimeout(() => d.remove(), 3000);
+  }
+}
 
 // ---- playground: act as an end user ---------------------------------------
 async function loadPlayground() {
@@ -495,8 +685,8 @@ async function loadDecisions() {
 }
 
 // ---- shell -------------------------------------------------------------------
-const loaders = { playground: loadPlayground, users: loadUsers, roles: loadRoles,
-                  scopes: loadScopes, audit: loadAudit, decisions: loadDecisions };
+const loaders = { playground: loadPlayground, heist: loadHeist, users: loadUsers,
+                  roles: loadRoles, scopes: loadScopes, audit: loadAudit, decisions: loadDecisions };
 function show(tab) {
   document.querySelectorAll("section").forEach((s) => s.classList.toggle("active", s.id === tab));
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
