@@ -122,7 +122,8 @@
 </header>
 
 <nav>
-  <button data-tab="users" class="active" onclick="show('users')">👥 Users</button>
+  <button data-tab="playground" class="active" onclick="show('playground')">🧪 Playground</button>
+  <button data-tab="users" onclick="show('users')">👥 Users</button>
   <button data-tab="roles" onclick="show('roles')">🎭 Roles</button>
   <button data-tab="scopes" onclick="show('scopes')">🗺️ Scope catalog</button>
   <button data-tab="audit" onclick="show('audit')">📜 Change audit</button>
@@ -130,7 +131,31 @@
 </nav>
 
 <main>
-  <section id="users" class="active">
+  <section id="playground" class="active">
+    <div class="hint">Become somebody and rattle the gates. Your admin token mints
+      them a real end-user token (identity only, zero scopes) — everything they're
+      allowed to do comes from the role store. Change their role mid-session: the
+      token never changes, their powers do. That's the whole trick. 🪄</div>
+
+    <div class="bar" id="p-personas"></div>
+
+    <div id="p-stage" style="display:none">
+      <div class="bar">
+        <span id="p-banner"></span>
+        <select id="p-role" title="change their role (as admin) — their token stays the same"></select>
+        <span class="spacer"></span>
+        <span class="dim">now try:</span>
+        <button onclick="act('👀 look at the agent', 'GET', '/agents/research-agent')">👀 look at the agent</button>
+        <button onclick="act('📋 list the agents', 'GET', '/agents')">📋 list the agents</button>
+        <button onclick="act('🏃 run the agent', 'POST', '/agents/research-agent/runs', { message: 'hi!' })">🏃 run the agent</button>
+        <button onclick="act('🗑️ delete a session', 'DELETE', '/sessions/some-session')">🗑️ delete a session</button>
+        <button onclick="act('🕵️ peek at the OS config', 'GET', '/config')">🕵️ peek at the OS config</button>
+      </div>
+      <table id="p-log"></table>
+    </div>
+  </section>
+
+  <section id="users">
     <div class="hint">One role per person — picking a new one swaps it out.
       Disable someone and they're locked out on their very next request, valid token or not.</div>
     <div class="bar">
@@ -266,6 +291,62 @@ const listParams = (st, search) => new URLSearchParams({
   page: st.page, limit: st.limit, sort_by: st.sort_by, sort_order: st.sort_order,
   ...(search ? { search } : {}),
 });
+
+// ---- playground: act as an end user ---------------------------------------
+async function loadPlayground() {
+  const { data } = await api("GET", "/authz/users?limit=100");
+  $("p-personas").innerHTML = "<span class='dim'>become:</span>" + data.map((u) => `
+    <button data-sub="${esc(u.id)}" ${state.persona?.id === u.id ? "class='primary'" : ""}>
+      ${u.disabled ? "🚫" : "🧑"} ${esc(u.id)} <span class="dim">· ${esc(u.role ?? "no role")}</span>
+    </button>`).join("");
+  $("p-personas").querySelectorAll("button").forEach((b) => b.onclick = () =>
+    become(data.find((u) => u.id === b.dataset.sub)));
+}
+async function become(user) {
+  // The admin token buys a persona token: same signing key, sub = the user,
+  // NO scopes — so everything they can do comes from the role store.
+  const minted = await api("POST", "/dev/mint", { sub: user.id }).catch((e) => {
+    status(false, "✗ /dev/mint missing — playground needs the server in dev mode");
+    throw e;
+  });
+  state.persona = { id: user.id, token: minted.token };
+  $("p-stage").style.display = "block";
+  $("p-banner").innerHTML = `you are now <b class="mono" style="color:rgb(var(--brand))">${esc(user.id)}</b> 🎫`;
+  $("p-role").innerHTML = ["<option value=''>— no role —</option>",
+    ...state.roles.map((r) => `<option ${r === user.role ? "selected" : ""}>${esc(r)}</option>`)].join("");
+  $("p-role").onchange = async (e) => {
+    if (e.target.value) await api("POST", `/authz/users/${user.id}/roles`, { role: e.target.value });
+    else if (user.role) await api("DELETE", `/authz/users/${user.id}/roles/${user.role}`);
+    user.role = e.target.value || null;
+    plog("🎭", `${user.id} is now ${user.role ?? "role-less"} — same token, new powers`, "", "");
+    loadPlayground();
+  };
+  plog("🎫", `minted a token for ${user.id} — go rattle some gates`, "", "");
+  loadPlayground();
+}
+async function act(label, method, path, body) {
+  if (!state.persona) return;
+  const isForm = method === "POST" && path.includes("/runs");
+  let payload, headers = { Authorization: "Bearer " + state.persona.token };
+  if (body && isForm) { payload = new FormData(); Object.entries(body).forEach(([k, v]) => payload.append(k, v)); }
+  else if (body) { payload = JSON.stringify(body); headers["Content-Type"] = "application/json"; }
+  const res = await fetch($("base").value.replace(/\/$/, "") + path, { method, headers, body: payload });
+  const detail = await res.json().then((d) => d?.detail ?? "").catch(() => "");
+  const denied = res.status === 401 || res.status === 403;
+  const verdict = denied
+    ? `<span class="chip deny">✗ ${res.status} nope</span>`
+    : `<span class="chip allow">✓ ${res.status} the gate said yes</span>`;
+  const note = denied ? detail
+    : res.ok ? "" : `${esc(detail)} (not RBAC's problem — the gate let them through 🤷)`;
+  plog(state.persona.id, `${label} <span class="dim mono">${method} ${path}</span>`, verdict, note);
+  status(!denied, `${denied ? "✗" : "✓"} [as ${state.persona.id}] ${method} ${path} → ${res.status}`);
+}
+function plog(who, what, verdict, note) {
+  const row = $("p-log").insertRow(0);
+  row.innerHTML = `<td class="dim">${new Date().toLocaleTimeString()}</td>
+    <td class="id">${esc(who)}</td><td>${what}</td><td>${verdict}</td>
+    <td class="dim">${typeof note === "string" ? note : esc(JSON.stringify(note))}</td>`;
+}
 
 // ---- users ---------------------------------------------------------------
 async function loadUsers() {
@@ -414,8 +495,8 @@ async function loadDecisions() {
 }
 
 // ---- shell -------------------------------------------------------------------
-const loaders = { users: loadUsers, roles: loadRoles, scopes: loadScopes,
-                  audit: loadAudit, decisions: loadDecisions };
+const loaders = { playground: loadPlayground, users: loadUsers, roles: loadRoles,
+                  scopes: loadScopes, audit: loadAudit, decisions: loadDecisions };
 function show(tab) {
   document.querySelectorAll("section").forEach((s) => s.classList.toggle("active", s.id === tab));
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));

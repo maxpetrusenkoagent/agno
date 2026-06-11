@@ -57,6 +57,8 @@ ADMIN_SUBJECT to the `sub` of your token (decode it: the `sub` claim). e.g.
 
 import os
 
+from fastapi import HTTPException, Request
+
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
 from agno.models.openai import OpenAIChat
@@ -158,6 +160,27 @@ agent_os = AgentOS(
 )
 app = agent_os.get_app()
 app.include_router(get_roles_router(roles, user_store=users))
+
+# Dev-mode only: let the bundled console.html "become" an end user. An admin
+# trades their token for one minted as any subject (sub only — no scopes, so
+# the role store decides what they can do). This is how the playground tab
+# demos RBAC: act as bob, get denied, give bob a role, retry with the SAME
+# token, get in. Never mounted when verifying against a real key/control plane.
+IS_DEV = ALGORITHM == "HS256" and KEYS == [DEV_SECRET]
+if IS_DEV:
+
+    @app.post("/dev/mint")
+    def mint_persona_token(payload: dict, request: Request) -> dict:
+        scopes = getattr(request.state, "scopes", []) or []
+        user_id = getattr(request.state, "user_id", None)
+        claims = getattr(request.state, "claims", {}) or {}
+        if "agent_os:admin" not in scopes and not roles.can_manage(user_id, claims):
+            raise HTTPException(status_code=403, detail="Only admins can mint persona tokens")
+        sub = (payload.get("sub") or "").strip()
+        if not sub:
+            raise HTTPException(status_code=422, detail="sub is required")
+        token = JWTIssuer(DEV_SECRET, audience=OS_ID).create_token(sub, expires_in=3600)
+        return {"sub": sub, "token": token}
 
 
 if __name__ == "__main__":
