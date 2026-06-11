@@ -76,6 +76,8 @@ whatsapp-crypto = ["cryptography>=41.0"]
 roles = ["casbin>=1.36", "casbin-sqlalchemy-adapter>=1.4"]
 # Back-compat alias for the former name; prefer agno[roles].
 casbin = ["casbin>=1.36", "casbin-sqlalchemy-adapter>=1.4"]
+# Optional extra for fine-grained / relationship-based authorization (ReBAC) via OpenFGA.
+fga = ["openfga-sdk>=0.9"]
 scheduler = ["croniter>=1.3", "pytz>=2023.3"]
 
 # Dependencies for Telemetry

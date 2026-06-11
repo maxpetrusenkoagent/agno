@@ -17,6 +17,7 @@ change rather than a fork of the request pipeline.
 
 from agno.os.authz.audit import AuditEvent, AuditSink, DbAuditSink, LoggingAuditSink
 from agno.os.authz.engine import EngineAuthorizationProvider, PolicyEngine, ScopeEntry
+from agno.os.authz.fga import FGAAuthorizationProvider, FGAClient
 from agno.os.authz.provider import (
     AuthorizationContext,
     AuthorizationProvider,
@@ -32,6 +33,10 @@ __all__ = [
     "PolicyEngine",
     "ScopeEntry",
     "EngineAuthorizationProvider",
+    # Fine-grained / relationship-based authz (ReBAC). The provider + port are
+    # dependency-free; the OpenFGA adapter (OpenFGAClient) lives behind agno[fga].
+    "FGAAuthorizationProvider",
+    "FGAClient",
     "AuditEvent",
     "AuditSink",
     "LoggingAuditSink",
