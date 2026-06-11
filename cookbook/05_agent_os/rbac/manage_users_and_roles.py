@@ -93,11 +93,14 @@ elif VERIFICATION_KEY:
 else:
     ALGORITHM, KEYS = "HS256", [DEV_SECRET]
 
-# Frontends run in the browser, so the server must allow their origin.
+# Frontends run in the browser, so the server must allow their origin. "null" is
+# the Origin a page opened from disk (file://) sends — it lets the bundled
+# console.html test client work with a double-click, no web server needed.
 CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
+    "null",
 ]
 
 os.makedirs("tmp", exist_ok=True)
@@ -175,9 +178,10 @@ if __name__ == "__main__":
     is_dev = ALGORITHM == "HS256" and not VERIFICATION_KEY and not JWKS_FILE
     if is_dev:
         admin_token = JWTIssuer(DEV_SECRET, audience=OS_ID).create_token(ADMIN_SUBJECT, expires_in=7 * 24 * 3600)
-        print("\n  dev mode - admin bearer token (paste into your frontend / curl):")
+        print("\n  dev mode - admin bearer token (paste into the console / your frontend / curl):")
         print(f"    {admin_token}")
-        print("\n  e.g.:  curl -H 'Authorization: Bearer <token>' http://localhost:7777/authz/users")
+        print("\n  test client:  open console.html (this folder) in a browser and paste the token")
+        print("  or curl:      curl -H 'Authorization: Bearer <token>' http://localhost:7777/authz/users")
     else:
         print("\n  control-plane mode: the frontend sends a token signed by your control")
         print(f"  plane / IdP (aud={OS_ID!r}). Operators are authorized by the token's scopes;")

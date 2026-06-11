@@ -1,0 +1,395 @@
+<!doctype html>
+<!--
+  AgentOS authz console — a single-file test client for the /authz management API.
+
+  Use it against the cookbook server:
+    1. python manage_users_and_roles.py        (prints a dev admin bearer token)
+    2. open this file in your browser          (double-click / open console.html)
+    3. paste the printed token, hit Connect
+
+  No build, no dependencies, nothing to install. Works from file:// — the
+  cookbook server's CORS allows it. Everything it does is plain fetch() against
+  the endpoints, so it doubles as living documentation of the API:
+
+    GET/POST/PATCH/DELETE /authz/users        directory (search, sort, paginate)
+    POST   /authz/users/{id}/roles            set THE role (one per user, replaces)
+    GET    /authz/roles + /roles/{slug}/scopes role + permission management
+    GET    /authz/scopes                       the permission catalog
+    GET    /authz/audit, /authz/decisions      the two trails (search, sort, paginate)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AgentOS authz console</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --fg:#e6e9ef; --dim:#8b93a3;
+          --accent:#7aa2f7; --ok:#9ece6a; --bad:#f7768e; --warn:#e0af68; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { display:flex; gap:8px; align-items:center; padding:10px 14px;
+           border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header b { color:var(--accent); margin-right:6px; }
+  input, select, button, textarea { background:var(--panel); color:var(--fg);
+    border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
+  input:focus, select:focus, textarea:focus { outline:1px solid var(--accent); }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#10131a; font-weight:600; }
+  button.danger:hover { border-color:var(--bad); color:var(--bad); }
+  #token { flex:1; min-width:240px; }
+  nav { display:flex; gap:4px; padding:8px 14px 0; border-bottom:1px solid var(--line); }
+  nav button { border-radius:6px 6px 0 0; border-bottom:none; color:var(--dim); }
+  nav button.active { color:var(--fg); background:var(--panel); border-color:var(--line); }
+  main { padding:14px; }
+  section { display:none; }
+  section.active { display:block; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .bar .spacer { flex:1; }
+  table { width:100%; border-collapse:collapse; background:var(--panel);
+          border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line);
+           vertical-align:top; }
+  th { color:var(--dim); font-weight:600; cursor:pointer; user-select:none; white-space:nowrap; }
+  th.sorted { color:var(--accent); }
+  tr:last-child td { border-bottom:none; }
+  .chip { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px;
+          border:1px solid var(--line); margin:1px 2px 1px 0; white-space:nowrap; }
+  .chip.allow { color:var(--ok); border-color:var(--ok); }
+  .chip.deny { color:var(--bad); border-color:var(--bad); }
+  .chip.active { color:var(--ok); border-color:var(--ok); }
+  .chip.disabled { color:var(--bad); border-color:var(--bad); }
+  .chip.x { cursor:pointer; }
+  .chip.x:hover { border-color:var(--bad); color:var(--bad); }
+  .dim { color:var(--dim); }
+  .pager { display:flex; gap:8px; align-items:center; margin-top:10px; color:var(--dim); }
+  #status { margin-left:auto; max-width:46%; overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; }
+  #status.ok { color:var(--ok); } #status.bad { color:var(--bad); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:8px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .card h4 { margin:0 0 6px; color:var(--accent); font-size:13px; }
+  details { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+            padding:8px 12px; margin-bottom:8px; }
+  summary { cursor:pointer; }
+  pre { margin:6px 0 0; white-space:pre-wrap; word-break:break-all; color:var(--dim); font-size:12px; }
+  .hint { color:var(--dim); font-size:12px; margin:6px 0 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <b>agentos /authz console</b>
+  <input id="base" value="http://localhost:7777" size="22" title="AgentOS base URL" />
+  <input id="token" placeholder="paste the bearer token the server printed at startup" />
+  <button class="primary" onclick="connect()">Connect</button>
+  <span id="status" class="dim">not connected</span>
+</header>
+
+<nav>
+  <button data-tab="users" class="active" onclick="show('users')">Users</button>
+  <button data-tab="roles" onclick="show('roles')">Roles</button>
+  <button data-tab="scopes" onclick="show('scopes')">Scope catalog</button>
+  <button data-tab="audit" onclick="show('audit')">Change audit</button>
+  <button data-tab="decisions" onclick="show('decisions')">Decisions</button>
+</nav>
+
+<main>
+  <section id="users" class="active">
+    <div class="hint">One role per user — picking a role REPLACES the current one.
+      Disabled users are denied on every request, even with a valid token.</div>
+    <div class="bar">
+      <input id="u-search" placeholder="search id / email / name" size="26"
+             oninput="debounced(loadUsers)" />
+      <label><input type="checkbox" id="u-disabled" checked onchange="loadUsers()" /> show disabled</label>
+      <span class="spacer"></span>
+      <input id="u-new-id" placeholder="new user id (jwt sub)" size="16" />
+      <input id="u-new-email" placeholder="email" size="16" />
+      <button onclick="createUser()">Add user</button>
+    </div>
+    <table id="u-table"></table>
+    <div class="pager" id="u-pager"></div>
+  </section>
+
+  <section id="roles">
+    <div class="hint">A role is a named bag of scopes. Deny overrides allow.
+      Click a scope chip to remove it from the role.</div>
+    <div class="bar">
+      <input id="r-new-slug" placeholder="new role slug" size="14" />
+      <input id="r-new-name" placeholder="display name" size="16" />
+      <button onclick="createRole()">Create role</button>
+    </div>
+    <div id="r-list"></div>
+  </section>
+
+  <section id="scopes">
+    <div class="hint">Everything this OS understands — generated from its own
+      route map, so it always matches what is actually enforced.</div>
+    <div class="grid" id="s-grid"></div>
+  </section>
+
+  <section id="audit">
+    <div class="hint">Who changed what (roles, assignments, users) with before/after.</div>
+    <div class="bar">
+      <input id="a-search" placeholder="search actor / action / target" size="28"
+             oninput="debounced(loadAudit)" />
+    </div>
+    <table id="a-table"></table>
+    <div class="pager" id="a-pager"></div>
+  </section>
+
+  <section id="decisions">
+    <div class="hint">Every allow/deny at the gate, with the token reference (jti).</div>
+    <div class="bar">
+      <input id="d-search" placeholder="search actor / action / METHOD /path" size="28"
+             oninput="debounced(loadDecisions)" />
+    </div>
+    <table id="d-table"></table>
+    <div class="pager" id="d-pager"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---- state ------------------------------------------------------------
+const state = {
+  roles: [],                         // role slugs, for the per-user role <select>
+  users:     { page: 1, limit: 10, sort_by: "created_at", sort_order: "desc" },
+  audit:     { page: 1, limit: 10, sort_by: "ts", sort_order: "desc" },
+  decisions: { page: 1, limit: 10, sort_by: "ts", sort_order: "desc" },
+};
+
+// ---- transport ---------------------------------------------------------
+async function api(method, path, body) {
+  const url = $("base").value.replace(/\/$/, "") + path;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      Authorization: "Bearer " + $("token").value.trim(),
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  status(res.ok, `${method} ${path} → ${res.status}`);
+  if (!res.ok) throw new Error(`${res.status} ${data?.detail ?? text}`);
+  return data;
+}
+function status(ok, msg) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = ok ? "ok" : "bad";
+}
+let timer;
+function debounced(fn) { clearTimeout(timer); timer = setTimeout(fn, 300); }
+
+// ---- shared render helpers ----------------------------------------------
+function pager(el, meta, st, reload) {
+  el.innerHTML = "";
+  const info = document.createElement("span");
+  info.textContent = `page ${meta.page}/${Math.max(meta.total_pages, 1)} · ${meta.total_count} total · ${meta.search_time_ms}ms`;
+  const prev = document.createElement("button");
+  const next = document.createElement("button");
+  prev.textContent = "‹ prev"; next.textContent = "next ›";
+  prev.disabled = meta.page <= 1;
+  next.disabled = meta.page >= meta.total_pages;
+  prev.onclick = () => { st.page--; reload(); };
+  next.onclick = () => { st.page++; reload(); };
+  el.append(prev, next, info);
+}
+// Sortable header row: click toggles the field / flips the direction.
+function headerRow(cols, st, reload) {
+  return "<tr>" + cols.map(([key, label]) => {
+    if (!key) return `<th>${label}</th>`;
+    const sorted = st.sort_by === key;
+    const arrow = sorted ? (st.sort_order === "asc" ? " ↑" : " ↓") : "";
+    return `<th class="${sorted ? "sorted" : ""}" data-sort="${key}">${label}${arrow}</th>`;
+  }).join("") + "</tr>";
+}
+function bindSort(table, st, reload) {
+  table.querySelectorAll("th[data-sort]").forEach((th) => th.onclick = () => {
+    const key = th.dataset.sort;
+    st.sort_order = st.sort_by === key && st.sort_order === "desc" ? "asc" : "desc";
+    st.sort_by = key;
+    st.page = 1;
+    reload();
+  });
+}
+const ts = (t) => t ? new Date(t * 1000).toLocaleString() : "";
+const listParams = (st, search) => new URLSearchParams({
+  page: st.page, limit: st.limit, sort_by: st.sort_by, sort_order: st.sort_order,
+  ...(search ? { search } : {}),
+});
+
+// ---- users ---------------------------------------------------------------
+async function loadUsers() {
+  const st = state.users;
+  const params = listParams(st, $("u-search").value.trim());
+  params.set("include_disabled", $("u-disabled").checked);
+  const { data, meta } = await api("GET", "/authz/users?" + params);
+  const table = $("u-table");
+  table.innerHTML = headerRow(
+    [["id", "id"], ["email", "email"], ["name", "name"], [null, "role"],
+     [null, "status"], ["created_at", "created"], [null, ""]],
+    st, loadUsers);
+  for (const u of data) {
+    const row = table.insertRow();
+    const options = ["<option value=''>— no role —</option>",
+      ...state.roles.map((r) =>
+        `<option ${r === u.role ? "selected" : ""}>${esc(r)}</option>`)].join("");
+    row.innerHTML = `
+      <td>${esc(u.id)}</td><td class="dim">${esc(u.email ?? "")}</td>
+      <td class="dim">${esc(u.name ?? "")}</td>
+      <td><select data-id="${esc(u.id)}" data-role="${esc(u.role ?? "")}">${options}</select></td>
+      <td><span class="chip ${u.status}">${u.status}</span></td>
+      <td class="dim">${ts(u.created_at)}</td>
+      <td>
+        <button data-act="toggle">${u.disabled ? "enable" : "disable"}</button>
+        <button data-act="delete" class="danger">delete</button>
+      </td>`;
+    row.querySelector("select").onchange = (e) => setRole(u, e.target);
+    row.querySelector("[data-act=toggle]").onclick = () =>
+      api("PATCH", `/authz/users/${u.id}`, { disabled: !u.disabled }).then(loadUsers);
+    row.querySelector("[data-act=delete]").onclick = () =>
+      confirm(`delete ${u.id}?`) && api("DELETE", `/authz/users/${u.id}`).then(loadUsers);
+  }
+  bindSort(table, st, loadUsers);
+  pager($("u-pager"), meta, st, loadUsers);
+}
+async function setRole(user, select) {
+  if (select.value) await api("POST", `/authz/users/${user.id}/roles`, { role: select.value });
+  else if (user.role) await api("DELETE", `/authz/users/${user.id}/roles/${user.role}`);
+  loadUsers();
+}
+async function createUser() {
+  const id = $("u-new-id").value.trim();
+  if (!id) return;
+  await api("POST", "/authz/users", { id, email: $("u-new-email").value.trim() || null });
+  $("u-new-id").value = $("u-new-email").value = "";
+  loadUsers();
+}
+
+// ---- roles ----------------------------------------------------------------
+async function loadRoles() {
+  const { data } = await api("GET", "/authz/roles?limit=100");
+  state.roles = data.map((r) => r.slug);
+  const catalog = await api("GET", "/authz/scopes");
+  const datalist = catalog.map((s) => `<option value="${esc(s.raw)}">`).join("");
+  $("r-list").innerHTML = data.map((role) => `
+    <details open>
+      <summary><b>${esc(role.slug)}</b>
+        <span class="dim">${esc(role.name)}${role.description ? " — " + esc(role.description) : ""}</span>
+        <button class="danger" style="float:right" data-del="${esc(role.slug)}">delete role</button>
+      </summary>
+      <div style="margin-top:8px">
+        ${role.scopes.map((s) =>
+          `<span class="chip x ${s.value}" title="click to remove"
+                 data-role="${esc(role.slug)}" data-scope="${esc(s.raw)}">${esc(s.raw)} · ${s.value}</span>`
+        ).join("") || '<span class="dim">no scopes</span>'}
+      </div>
+      <div class="bar" style="margin-top:8px">
+        <input list="scope-catalog" placeholder="agents:*:run" size="24" data-add-scope="${esc(role.slug)}" />
+        <select data-add-effect="${esc(role.slug)}"><option>allow</option><option>deny</option></select>
+        <button data-add-btn="${esc(role.slug)}">add scope</button>
+      </div>
+    </details>`).join("") + `<datalist id="scope-catalog">${datalist}</datalist>`;
+
+  $("r-list").querySelectorAll(".chip.x").forEach((chip) => chip.onclick = () =>
+    api("PATCH", `/authz/roles/${chip.dataset.role}/scopes`,
+        { remove: [chip.dataset.scope] }).then(loadRoles));
+  $("r-list").querySelectorAll("[data-add-btn]").forEach((btn) => btn.onclick = () => {
+    const slug = btn.dataset.addBtn;
+    const scope = document.querySelector(`[data-add-scope="${slug}"]`).value.trim();
+    const effect = document.querySelector(`[data-add-effect="${slug}"]`).value;
+    if (scope) api("PATCH", `/authz/roles/${slug}/scopes`,
+                   { upsert: [{ scope, effect }] }).then(loadRoles);
+  });
+  $("r-list").querySelectorAll("[data-del]").forEach((btn) => btn.onclick = () =>
+    confirm(`delete role ${btn.dataset.del}?`) &&
+    api("DELETE", `/authz/roles/${btn.dataset.del}`).then(loadRoles));
+}
+async function createRole() {
+  const slug = $("r-new-slug").value.trim();
+  if (!slug) return;
+  await api("POST", "/authz/roles", { slug, name: $("r-new-name").value.trim() || null });
+  $("r-new-slug").value = $("r-new-name").value = "";
+  loadRoles();
+}
+
+// ---- scope catalog -----------------------------------------------------------
+async function loadScopes() {
+  const catalog = await api("GET", "/authz/scopes");
+  const byNs = {};
+  for (const s of catalog) (byNs[s.namespace] ??= []).push(s);
+  $("s-grid").innerHTML = Object.entries(byNs).map(([ns, scopes]) => `
+    <div class="card"><h4>${esc(ns)}</h4>
+      ${scopes.map((s) => `<span class="chip">${esc(s.raw)}</span>`).join("")}
+    </div>`).join("");
+}
+
+// ---- trails -------------------------------------------------------------------
+async function loadAudit() {
+  const st = state.audit;
+  const { data, meta } = await api("GET",
+    "/authz/audit?" + listParams(st, $("a-search").value.trim()));
+  const table = $("a-table");
+  table.innerHTML = headerRow(
+    [["ts", "when"], ["actor", "actor"], ["action", "action"], ["target", "target"], [null, "before → after"]],
+    st, loadAudit);
+  for (const e of data) {
+    table.insertRow().innerHTML = `
+      <td class="dim">${ts(e.ts)}</td><td>${esc(e.actor ?? "system")}</td>
+      <td><span class="chip">${esc(e.action)}</span></td><td>${esc(e.target)}</td>
+      <td class="dim">${esc(JSON.stringify(e.before))} → ${esc(JSON.stringify(e.after))}</td>`;
+  }
+  bindSort(table, st, loadAudit);
+  pager($("a-pager"), meta, st, loadAudit);
+}
+async function loadDecisions() {
+  const st = state.decisions;
+  const { data, meta } = await api("GET",
+    "/authz/decisions?" + listParams(st, $("d-search").value.trim()));
+  const table = $("d-table");
+  table.innerHTML = headerRow(
+    [["ts", "when"], ["actor", "actor"], ["action", "decision"], ["target", "request"], [null, "required"], [null, "token"]],
+    st, loadDecisions);
+  for (const e of data) {
+    const allowed = e.action === "access.allowed";
+    table.insertRow().innerHTML = `
+      <td class="dim">${ts(e.ts)}</td><td>${esc(e.actor ?? "")}</td>
+      <td><span class="chip ${allowed ? "allow" : "deny"}">${allowed ? "allowed" : "denied"}</span></td>
+      <td>${esc(e.target)}</td>
+      <td class="dim">${esc((e.metadata?.required ?? []).join(", "))}</td>
+      <td class="dim">${esc(e.metadata?.token ?? "")}</td>`;
+  }
+  bindSort(table, st, loadDecisions);
+  pager($("d-pager"), meta, st, loadDecisions);
+}
+
+// ---- shell -------------------------------------------------------------------
+const loaders = { users: loadUsers, roles: loadRoles, scopes: loadScopes,
+                  audit: loadAudit, decisions: loadDecisions };
+function show(tab) {
+  document.querySelectorAll("section").forEach((s) => s.classList.toggle("active", s.id === tab));
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  loaders[tab]().catch(() => {});
+}
+async function connect() {
+  localStorage.setItem("authz-console", JSON.stringify({ base: $("base").value, token: $("token").value }));
+  await loadRoles().catch((e) => { throw e; });  // roles first: feeds the user-row selects
+  show(document.querySelector("nav button.active").dataset.tab);
+}
+// restore last session
+try {
+  const saved = JSON.parse(localStorage.getItem("authz-console") ?? "{}");
+  if (saved.base) $("base").value = saved.base;
+  if (saved.token) { $("token").value = saved.token; connect(); }
+} catch { /* fresh start */ }
+</script>
+</body>
+</html>

@@ -374,6 +374,9 @@ New to authorization? Read them in this order:
 4. `manage_users_and_roles.py` — runs a real AgentOS server that serves the
    `/authz` user + role management API (admin-only, with audit) for a frontend/
    admin UI, with CORS and a seeded admin + users. Prints a ready-to-use admin token.
+   Pair it with `console.html` — a single-file test client (no build, no deps):
+   start the server, open the file in a browser, paste the printed token, and
+   click around users / roles / scopes / both audit trails.
 5. `idp_workos_auth0.py` — they already have a login service (WorkOS/Auth0): roles
    ride the token, you only enforce, via a ~30-line custom `AuthorizationProvider`.
 
