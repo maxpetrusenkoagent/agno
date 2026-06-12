@@ -234,8 +234,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
 const state = {
   roles: [],                         // role slugs, for the per-user role <select>
   users:     { page: 1, limit: 10, sort_by: "created_at", sort_order: "desc" },
-  audit:     { page: 1, limit: 10, sort_by: "ts", sort_order: "desc" },
-  decisions: { page: 1, limit: 10, sort_by: "ts", sort_order: "desc" },
+  audit:     { page: 1, limit: 10, sort_by: "created_at", sort_order: "desc" },
+  decisions: { page: 1, limit: 10, sort_by: "created_at", sort_order: "desc" },
 };
 
 // ---- transport ---------------------------------------------------------
@@ -652,11 +652,11 @@ async function loadAudit() {
     "/authz/audit?" + listParams(st, $("a-search").value.trim()));
   const table = $("a-table");
   table.innerHTML = headerRow(
-    [["ts", "when"], ["actor", "actor"], ["action", "action"], ["target", "target"], [null, "before → after"]], st);
+    [["created_at", "when"], ["actor", "actor"], ["action", "action"], ["target", "target"], [null, "before → after"]], st);
   if (!data.length) emptyRow(table, 5, "nothing yet — change something and it'll show up here ✍️");
   for (const e of data) {
     table.insertRow().innerHTML = `
-      <td class="dim">${ts(e.ts)}</td><td class="id">${esc(e.actor ?? "system")}</td>
+      <td class="dim">${ts(e.created_at)}</td><td class="id">${esc(e.actor ?? "system")}</td>
       <td><span class="chip">${esc(e.action)}</span></td><td class="id">${esc(e.target)}</td>
       <td class="dim dim-mono">${esc(JSON.stringify(e.before))} → ${esc(JSON.stringify(e.after))}</td>`;
   }
@@ -669,12 +669,12 @@ async function loadDecisions() {
     "/authz/decisions?" + listParams(st, $("d-search").value.trim()));
   const table = $("d-table");
   table.innerHTML = headerRow(
-    [["ts", "when"], ["actor", "actor"], ["action", "decision"], ["target", "request"], [null, "required"], [null, "token"]], st);
+    [["created_at", "when"], ["actor", "actor"], ["action", "decision"], ["target", "request"], [null, "required"], [null, "token"]], st);
   if (!data.length) emptyRow(table, 6, "no decisions recorded — make a request to the OS first 🚪");
   for (const e of data) {
     const allowed = e.action === "access.allowed";
     table.insertRow().innerHTML = `
-      <td class="dim">${ts(e.ts)}</td><td class="id">${esc(e.actor ?? "")}</td>
+      <td class="dim">${ts(e.created_at)}</td><td class="id">${esc(e.actor ?? "")}</td>
       <td><span class="chip ${allowed ? "allow" : "deny"}">${allowed ? "✓ in" : "✗ nope"}</span></td>
       <td class="id">${esc(e.target)}</td>
       <td class="dim dim-mono">${esc((e.metadata?.required ?? []).join(", "))}</td>

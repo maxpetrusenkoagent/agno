@@ -33,9 +33,9 @@ from typing import Any, List, Optional
 # The audit-trail read contract (shared by both trails — change and decision):
 # which fields a page can be sorted by / searched over, and the defaults. The
 # roles router validates request params against these, so they have one owner.
-AUDIT_SORT_FIELDS = ("ts", "actor", "action", "target")
+AUDIT_SORT_FIELDS = ("created_at", "actor", "action", "target")
 AUDIT_SEARCH_FIELDS = ("actor", "action", "target")
-DEFAULT_AUDIT_SORT_FIELD = "ts"
+DEFAULT_AUDIT_SORT_FIELD = "created_at"
 DEFAULT_AUDIT_SORT_ORDER = "desc"
 
 
@@ -65,7 +65,7 @@ class AuditEvent:
 
     def to_dict(self) -> dict:
         return {
-            "ts": self.timestamp,
+            "created_at": self.timestamp,
             "actor": self.actor,
             "action": self.action,
             "target": self.target,
@@ -147,7 +147,7 @@ class DbAuditSink(AuditSink):
             table_name,
             metadata,
             sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("ts", sa.Integer, nullable=False),
+            sa.Column("created_at", sa.Integer, nullable=False),
             sa.Column("actor", sa.String(255)),
             sa.Column("action", sa.String(255), nullable=False),
             sa.Column("target", sa.String(255), nullable=False),
@@ -159,7 +159,7 @@ class DbAuditSink(AuditSink):
             decision_table_name,
             metadata,
             sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("ts", sa.Integer, nullable=False),
+            sa.Column("created_at", sa.Integer, nullable=False),
             sa.Column("actor", sa.String(255)),
             sa.Column("action", sa.String(255), nullable=False),  # access.allowed / access.denied
             sa.Column("target", sa.String(512), nullable=False),  # "METHOD /path"
@@ -180,7 +180,7 @@ class DbAuditSink(AuditSink):
         with self._engine.begin() as conn:
             conn.execute(
                 self._table.insert().values(
-                    ts=event.timestamp,
+                    created_at=event.timestamp,
                     actor=event.actor,
                     action=event.action,
                     target=event.target,
@@ -194,7 +194,7 @@ class DbAuditSink(AuditSink):
         with self._engine.begin() as conn:
             conn.execute(
                 self._decisions.insert().values(
-                    ts=event.timestamp,
+                    created_at=event.timestamp,
                     actor=event.actor,
                     action=event.action,
                     target=event.target,
@@ -253,7 +253,7 @@ class DbAuditSink(AuditSink):
         ``sort_by`` one of :attr:`SORTABLE_FIELDS`, ``order`` asc|desc)."""
         return [
             {
-                "ts": r["ts"],
+                "created_at": r["created_at"],
                 "actor": r["actor"],
                 "action": r["action"],
                 "target": r["target"],
@@ -280,7 +280,7 @@ class DbAuditSink(AuditSink):
         """
         return [
             {
-                "ts": r["ts"],
+                "created_at": r["created_at"],
                 "actor": r["actor"],
                 "action": r["action"],
                 "target": r["target"],
