@@ -1,15 +1,3 @@
-"""Event handlers for AG-UI protocol translation.
-
-This module contains:
-1. HANDLERS dispatch table — maps Agno event types to handler functions
-2. Individual on_* handlers — translate Agno events to AG-UI events
-3. Response content extractors — used by handlers to extract text from chunks
-
-Adding a new event type:
-1. Write on_new_event(chunk, state) -> List[BaseEvent]
-2. Add entry to HANDLERS dict: RunEvent.new_event.value: on_new_event
-"""
-
 import copy
 import json
 import uuid
@@ -45,13 +33,7 @@ from agno.run.team import RunContentEvent as TeamRunContentEvent
 from agno.run.team import TeamRunEvent
 from agno.utils.message import get_text_from_message
 
-# Handler signature: (chunk, state) -> List[BaseEvent]
 EventHandler = Callable[[BaseRunOutputEvent, StreamState], List[BaseEvent]]
-
-
-# =============================================================================
-# Response Content Extractors
-# =============================================================================
 
 
 def _extract_response_content(response: RunContentEvent) -> str:
@@ -411,11 +393,6 @@ def on_run_completed(chunk: BaseRunOutputEvent, state: StreamState) -> List[Base
     return events
 
 
-# =============================================================================
-# Dispatch Table
-# =============================================================================
-
-
 def _normalize_event(event: str) -> str:
     """Strip 'Team' prefix so agent and team events use the same handlers."""
     return event.removeprefix("Team")
@@ -442,11 +419,6 @@ _COMPLETION_EVENTS = frozenset(
         TeamRunEvent.run_paused.value,
     }
 )
-
-
-# =============================================================================
-# Public API
-# =============================================================================
 
 
 def is_completion_event(chunk: BaseRunOutputEvent) -> bool:
