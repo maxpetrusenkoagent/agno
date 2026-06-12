@@ -470,6 +470,8 @@ module = [
   "bson.*",
   "brave.*",
   "browserbase.*",
+  "casbin.*",
+  "casbin_sqlalchemy_adapter.*",
   "cassio.*",
   "cerebras.*",
   "cerebras_cloud_sdk.*",
@@ -604,8 +606,6 @@ module = [
   "trafilatura.*",
   "xlrd.*",
   "celpy.*",
-  "casbin.*",
-  "casbin_sqlalchemy_adapter.*",
   "openfga_sdk.*",
 ]
 ignore_missing_imports = true
