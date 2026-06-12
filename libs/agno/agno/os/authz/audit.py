@@ -140,7 +140,7 @@ class DbAuditSink(AuditSink):
             engine = engine_from_db(db)
         if engine is None and db_url is None:
             raise ValueError("DbAuditSink needs one of: db (an agno Db), engine, or db_url")
-        self._engine = engine if engine is not None else sa.create_engine(db_url)
+        self._engine = engine if engine is not None else sa.create_engine(db_url)  # type: ignore[arg-type]
         metadata = sa.MetaData()
         # change trail: role/assignment mutations with before/after
         self._table = sa.Table(
@@ -217,7 +217,7 @@ class DbAuditSink(AuditSink):
 
     def _select_page(
         self, table, limit: int, offset: int, search: Optional[str], sort_by: str, order: str
-    ) -> List[dict]:
+    ) -> List[Any]:
         import sqlalchemy as sa
 
         if sort_by not in AUDIT_SORT_FIELDS:
@@ -230,7 +230,7 @@ class DbAuditSink(AuditSink):
         cols = (table.c.id,) if sort_by == DEFAULT_AUDIT_SORT_FIELD else (table.c[sort_by], table.c.id)
         order_by = [c.asc() if order == "asc" else c.desc() for c in cols]
         with self._engine.connect() as conn:
-            return conn.execute(stmt.order_by(*order_by).limit(limit).offset(offset)).mappings().all()
+            return list(conn.execute(stmt.order_by(*order_by).limit(limit).offset(offset)).mappings().all())
 
     def _count(self, table, search: Optional[str]) -> int:
         import sqlalchemy as sa

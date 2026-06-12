@@ -107,7 +107,7 @@ class CasbinPolicyEngine(PolicyEngine):
             import casbin  # noqa: F401
         except ImportError as e:  # pragma: no cover
             raise ImportError(
-                "Managed roles need the optional extra. Install it with: pip install \"agno[roles]\""
+                'Managed roles need the optional extra. Install it with: pip install "agno[roles]"'
             ) from e
 
         import casbin
@@ -247,5 +247,5 @@ class CasbinPolicyEngine(PolicyEngine):
                 return {"*"}
             prefix = f"{resource_type}/"
             if p_obj.startswith(prefix):
-                ids.add(p_obj[len(prefix):])
+                ids.add(p_obj[len(prefix) :])
         return ids

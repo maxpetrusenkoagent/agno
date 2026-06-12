@@ -79,8 +79,8 @@ class ManagedUserStore:
         """
         self._audit = audit
         self._mem: Optional[Dict[str, dict]] = None
-        self._engine = None
-        self._table = None
+        self._engine: Any = None  # SQLAlchemy Engine when db-backed, else None
+        self._table: Any = None  # SQLAlchemy Table for authz_users
 
         if db is not None and engine is None:
             from agno.os.authz._db import engine_from_db
@@ -90,7 +90,7 @@ class ManagedUserStore:
         if engine is not None or db_url is not None:
             import sqlalchemy as sa
 
-            self._engine = engine if engine is not None else sa.create_engine(db_url)
+            self._engine = engine if engine is not None else sa.create_engine(db_url)  # type: ignore[arg-type]
             metadata = sa.MetaData()
             self._table = sa.Table(
                 table_name,
@@ -199,7 +199,9 @@ class ManagedUserStore:
         row["disabled"] = bool(disabled)
         row["updated_at"] = _now()
         self._write(row, insert=False)
-        self._emit("user.disabled" if disabled else "user.enabled", id, [self._summary(existing)], [self._summary(row)], actor)
+        self._emit(
+            "user.disabled" if disabled else "user.enabled", id, [self._summary(existing)], [self._summary(row)], actor
+        )
         return row
 
     def remove(self, id: str, actor: Optional[str] = None) -> bool:
@@ -321,9 +323,9 @@ class ManagedUserStore:
             .limit(limit)
             .offset(offset)
         )
-        with self._engine.connect() as conn:  # type: ignore[union-attr]
-            rows = conn.execute(stmt).mappings().all()
-        return [self._row_to_dict(r) for r in rows]
+        with self._engine.connect() as conn:
+            db_rows = conn.execute(stmt).mappings().all()
+        return [self._row_to_dict(r) for r in db_rows]
 
     def count(self, include_disabled: bool = True, search: Optional[str] = None) -> int:
         """Total number of users (for pagination), with the same filters as

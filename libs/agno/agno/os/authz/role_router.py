@@ -34,6 +34,7 @@ Endpoints (default prefix ``/authz``):
 """
 
 import time
+from enum import Enum
 from typing import TYPE_CHECKING, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -78,7 +79,9 @@ class RoleScopeSchema(BaseModel):
     @classmethod
     def from_entry(cls, entry: dict) -> "RoleScopeSchema":
         ns, sub, perm = _parse_scope(entry["scope"])
-        return cls(raw=entry["scope"], namespace=ns, sub_namespace=sub, permission=perm, value=entry.get("effect", "allow"))
+        return cls(
+            raw=entry["scope"], namespace=ns, sub_namespace=sub, permission=perm, value=entry.get("effect", "allow")
+        )
 
 
 class RoleSchema(BaseModel):
@@ -223,7 +226,7 @@ def _page(items: list, page: int, limit: int) -> PaginatedResponse:
 def get_roles_router(
     store: "ManagedRoleStore",
     prefix: str = "/authz",
-    tags: List[str] = ["Authorization"],
+    tags: List[Union[str, Enum]] = ["Authorization"],
     user_store: "Optional[ManagedUserStore]" = None,
 ) -> APIRouter:
     """Build the admin-only roles-management router bound to ``store``.
@@ -363,8 +366,11 @@ def get_roles_router(
         Empty unless the store was given a readable audit sink (e.g. DbAuditSink)."""
         start_ms = time.time() * 1000
         events = store.audit_log(
-            limit, offset=(page - 1) * limit, search=search,
-            sort_by=_validated_sort_field(sort_by), order=sort_order.value,
+            limit,
+            offset=(page - 1) * limit,
+            search=search,
+            sort_by=_validated_sort_field(sort_by),
+            order=sort_order.value,
         )
         total = store.audit_count(search=search)
         return _paginated(events, page, limit, total, search_time_ms=round(time.time() * 1000 - start_ms, 2))
@@ -389,8 +395,11 @@ def get_roles_router(
             return _paginated([], page, limit, 0)
         start_ms = time.time() * 1000
         events = sink.read_decisions(
-            limit, offset=(page - 1) * limit, search=search,
-            sort_by=_validated_sort_field(sort_by), order=sort_order.value,
+            limit,
+            offset=(page - 1) * limit,
+            search=search,
+            sort_by=_validated_sort_field(sort_by),
+            order=sort_order.value,
         )
         total = sink.count_decisions(search=search)
         return _paginated(events, page, limit, total, search_time_ms=round(time.time() * 1000 - start_ms, 2))
@@ -430,7 +439,9 @@ def get_roles_router(
             include_disabled: bool = True,
             limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
             page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
-            search: Optional[str] = Query(default=None, description="Filter by id/email/name (case-insensitive substring)"),
+            search: Optional[str] = Query(
+                default=None, description="Filter by id/email/name (case-insensitive substring)"
+            ),
             sort_by: str = Query(default=DEFAULT_USER_SORT_FIELD, description="Field to sort by"),
             sort_order: SortOrder = Query(default=SortOrder.DESC, description="Sort order (asc or desc)"),
         ):
@@ -441,12 +452,19 @@ def get_roles_router(
             # `search` filters before pagination, so meta counts the matches.
             start_ms = time.time() * 1000
             rows = user_store.list(
-                limit=limit, offset=(page - 1) * limit, include_disabled=include_disabled,
-                search=search, sort_by=sort_by, order=sort_order.value,
+                limit=limit,
+                offset=(page - 1) * limit,
+                include_disabled=include_disabled,
+                search=search,
+                sort_by=sort_by,
+                order=sort_order.value,
             )
             total = user_store.count(include_disabled=include_disabled, search=search)
             return _paginated(
-                [_user(u) for u in rows], page, limit, total,
+                [_user(u) for u in rows],
+                page,
+                limit,
+                total,
                 search_time_ms=round(time.time() * 1000 - start_ms, 2),
             )
 

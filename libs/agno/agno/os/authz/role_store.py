@@ -115,8 +115,8 @@ class ManagedRoleStore:
         # Casbin only stores policies, so metadata needs its own table; reuse the
         # same DB when one is configured, else keep it in memory.
         self._meta_mem: Optional[Dict[str, dict]] = None
-        self._meta_engine = None
-        self._meta_table = None
+        self._meta_engine: Any = None  # SQLAlchemy Engine when db-backed, else None
+        self._meta_table: Any = None  # SQLAlchemy Table for authz_roles metadata
         if db is not None:
             self._init_meta_table(_engine_from_db(db))
         elif db_url is not None:
@@ -135,8 +135,8 @@ class ManagedRoleStore:
         self,
         action: str,
         target: str,
-        before: Optional[List[str]],
-        after: Optional[List[str]],
+        before: Optional[List[Any]],
+        after: Optional[List[Any]],
         actor: Optional[str],
     ) -> None:
         """Record one change to the audit sink (no-op when no sink is configured)."""
@@ -407,8 +407,11 @@ class ManagedRoleStore:
             self._engine.unassign(subject, existing)
         self._engine.assign(subject, role)
         self._emit(
-            "user.assigned", subject, before if self._audit else None,
-            self.roles_of(subject) if self._audit else None, actor,
+            "user.assigned",
+            subject,
+            before if self._audit else None,
+            self.roles_of(subject) if self._audit else None,
+            actor,
         )
 
     def unassign(self, subject: str, role: str, actor: Optional[str] = None) -> None:

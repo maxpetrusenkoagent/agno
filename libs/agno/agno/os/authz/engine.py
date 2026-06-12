@@ -127,9 +127,7 @@ class EngineAuthorizationProvider(AuthorizationProvider):
 
     def check(self, ctx: AuthorizationContext) -> bool:
         subject, roles = self._identity(ctx)
-        return self._engine.check_resource(
-            ctx.resource_type, ctx.resource_id, ctx.action, subject=subject, roles=roles
-        )
+        return self._engine.check_resource(ctx.resource_type, ctx.resource_id, ctx.action, subject=subject, roles=roles)
 
     def authorize_route(self, ctx: AuthorizationContext, required_scopes: List[str]) -> bool:
         # Resource-typed routes decide on the extracted (type, id, action); other

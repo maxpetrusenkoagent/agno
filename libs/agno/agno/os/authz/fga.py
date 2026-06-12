@@ -124,7 +124,7 @@ class FGAAuthorizationProvider(AuthorizationProvider):
         prefix = f"{ctx.resource_type}:"
         # FGA returns concrete objects (never a wildcard), so we return concrete
         # ids — list endpoints get exactly the set the user is related to.
-        return {o[len(prefix):] for o in objects if o.startswith(prefix)}
+        return {o[len(prefix) :] for o in objects if o.startswith(prefix)}
 
     def authorize_route(self, ctx: AuthorizationContext, required_scopes: List[str]) -> bool:
         # Per-resource routes: decide relationally. Everything else (non-resource
@@ -156,7 +156,9 @@ class OpenFGAClient:
             from openfga_sdk import ClientConfiguration
             from openfga_sdk.sync import OpenFgaClient as _OpenFgaClient
         except ImportError as e:  # pragma: no cover
-            raise ImportError('OpenFGA support needs the optional extra. Install it with: pip install "agno[fga]"') from e
+            raise ImportError(
+                'OpenFGA support needs the optional extra. Install it with: pip install "agno[fga]"'
+            ) from e
 
         self._client = _OpenFgaClient(
             ClientConfiguration(

@@ -603,6 +603,9 @@ module = [
   "surrealdb.*",
   "trafilatura.*",
   "xlrd.*",
-  "celpy.*"
+  "celpy.*",
+  "casbin.*",
+  "casbin_sqlalchemy_adapter.*",
+  "openfga_sdk.*",
 ]
 ignore_missing_imports = true
