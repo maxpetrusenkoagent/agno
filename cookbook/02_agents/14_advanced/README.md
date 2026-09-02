@@ -20,6 +20,7 @@ Advanced examples covering caching, compression, concurrency, events, retries, d
 - `reasoning_agent_events.py` - Events during reasoning steps.
 - `retries.py` - Retry configuration with exponential backoff.
 - `tool_call_compression.py` - Compress tool call results in context.
+- `tool_policy.py` - Deterministic tool-call authorization with allowlist/denylist.
 
 ## Prerequisites
 - Load environment variables with `direnv allow` (including `OPENAI_API_KEY`).

@@ -1514,6 +1514,7 @@ class Model(ABC):
                 function_call_results: List[Message] = []
 
                 # Execute function calls
+                paused_tool_executions: List[ToolExecution] = []
                 for function_call_response in self.run_function_calls(
                     function_calls=function_calls_to_run,
                     function_call_results=function_call_results,
@@ -1521,6 +1522,12 @@ class Model(ABC):
                     function_call_limit=tool_call_limit,
                     result_store=result_store,
                 ):
+                    if isinstance(function_call_response, ModelResponse):
+                        if (
+                            function_call_response.event == ModelResponseEvent.tool_call_paused.value
+                            and function_call_response.tool_executions
+                        ):
+                            paused_tool_executions.extend(function_call_response.tool_executions)
                     if self.cache_response and isinstance(function_call_response, ModelResponse):
                         streaming_responses.append(function_call_response)
                     yield function_call_response
@@ -1574,16 +1581,12 @@ class Model(ABC):
                     except Exception as e:
                         log_error(f"after_tool_results callback failed: {e}")
 
-                # If we have any tool calls that require confirmation, break the loop
-                if any(fc.function.requires_confirmation for fc in function_calls_to_run):
-                    break
-
-                # If we have any tool calls that require external execution, break the loop
-                if any(fc.function.external_execution for fc in function_calls_to_run):
-                    break
-
-                # If we have any tool calls that require user input, break the loop
-                if any(fc.function.requires_user_input for fc in function_calls_to_run):
+                # If any tool call actually paused (confirmation, user input, or
+                # external execution), break the loop: the run waits on the
+                # requirement. Check the emitted paused executions, not the
+                # original call flags, so policy-denied calls (which never pause)
+                # do not end the turn prematurely.
+                if paused_tool_executions:
                     break
 
                 # Check if run_response has requirements (e.g., from member agent HITL)
@@ -1795,6 +1798,7 @@ class Model(ABC):
                 function_call_results: List[Message] = []
 
                 # Execute function calls
+                paused_tool_executions: List[ToolExecution] = []
                 async for function_call_response in self.arun_function_calls(
                     function_calls=function_calls_to_run,
                     function_call_results=function_call_results,
@@ -1802,6 +1806,12 @@ class Model(ABC):
                     function_call_limit=tool_call_limit,
                     result_store=result_store,
                 ):
+                    if isinstance(function_call_response, ModelResponse):
+                        if (
+                            function_call_response.event == ModelResponseEvent.tool_call_paused.value
+                            and function_call_response.tool_executions
+                        ):
+                            paused_tool_executions.extend(function_call_response.tool_executions)
                     if self.cache_response and isinstance(function_call_response, ModelResponse):
                         streaming_responses.append(function_call_response)
                     yield function_call_response
@@ -1855,16 +1865,12 @@ class Model(ABC):
                     except Exception as e:
                         log_error(f"after_tool_results callback failed: {e}")
 
-                # If we have any tool calls that require confirmation, break the loop
-                if any(fc.function.requires_confirmation for fc in function_calls_to_run):
-                    break
-
-                # If we have any tool calls that require external execution, break the loop
-                if any(fc.function.external_execution for fc in function_calls_to_run):
-                    break
-
-                # If we have any tool calls that require user input, break the loop
-                if any(fc.function.requires_user_input for fc in function_calls_to_run):
+                # If any tool call actually paused (confirmation, user input, or
+                # external execution), break the loop: the run waits on the
+                # requirement. Check the emitted paused executions, not the
+                # original call flags, so policy-denied calls (which never pause)
+                # do not end the turn prematurely.
+                if paused_tool_executions:
                     break
 
                 # Check if run_response has requirements (e.g., from member agent HITL)
@@ -2224,6 +2230,42 @@ class Model(ABC):
             tool_call_error=True,
         )
 
+    def create_tool_policy_denial_result(self, function_call: FunctionCall, denial_reason: str) -> Message:
+        """Create the tool message returned to the model when a call is policy-denied."""
+        return Message(
+            role=self.tool_message_role,
+            content=denial_reason,
+            tool_call_id=function_call.call_id,
+            tool_name=function_call.function.name,
+            tool_args=function_call.arguments,
+            tool_call_error=True,
+        )
+
+    @staticmethod
+    def _get_tool_policy_denial_reason(function_call: FunctionCall) -> Optional[str]:
+        """Return the agent tool-policy denial reason for a call, or None if allowed.
+
+        The policy lives on the Agent that prepared the tool (``Function._agent``).
+        Team-level tools carry no ``_agent`` and are not policy-gated here; member
+        agents of a Team carry their own policy and are gated when their own run
+        loop executes their tools.
+
+        The offloading read-back tools (``read_result`` / ``search_result``) are
+        framework plumbing, not user tools, and are exempt - but only when they
+        carry the framework's provenance marker, so a user tool that happens to
+        be named ``read_result`` is still governed by the policy.
+        """
+        function = function_call.function
+        if function._is_offload_read_back:
+            return None
+        agent = getattr(function, "_agent", None)
+        if agent is None:
+            return None
+        policy = getattr(agent, "tool_policy", None)
+        if policy is None:
+            return None
+        return policy.check(function.name)
+
     def run_function_call(
         self,
         function_call: FunctionCall,
@@ -2231,6 +2273,13 @@ class Model(ABC):
         additional_input: Optional[List[Message]] = None,
         result_store: Optional["ResultStore"] = None,
     ) -> Iterator[Union[ModelResponse, RunOutputEvent, TeamRunOutputEvent]]:
+        # Deterministic tool-policy authorization: a denied call never executes.
+        denial_reason = self._get_tool_policy_denial_reason(function_call)
+        if denial_reason is not None:
+            log_warning(f"{denial_reason} Skipping execution of tool '{function_call.function.name}'.")
+            function_call_results.append(self.create_tool_policy_denial_result(function_call, denial_reason))
+            return
+
         # Start function call
         function_call_timer = Timer()
         function_call_timer.start()
@@ -2424,6 +2473,16 @@ class Model(ABC):
             additional_input = []
 
         for fc in function_calls:
+            # Deterministic tool-policy authorization: a denied call never
+            # executes, never pauses for approval, and never emits a
+            # tool-call-started event. It is reported to the model as an
+            # error result, like the tool-call-limit path.
+            denial_reason = self._get_tool_policy_denial_reason(fc)
+            if denial_reason is not None:
+                log_warning(f"{denial_reason} Skipping execution of tool '{fc.function.name}'.")
+                function_call_results.append(self.create_tool_policy_denial_result(fc, denial_reason))
+                continue
+
             # The read-back tools exist only because offloading replaced a result
             # the model was told to go and read. Counting them against the limit
             # can refuse the very read the run needs to answer.
@@ -2580,6 +2639,21 @@ class Model(ABC):
         """Run a single function call and return its success status, timer, and the FunctionCall object."""
         from inspect import isasyncgenfunction, iscoroutine, iscoroutinefunction
 
+        # Deterministic tool-policy authorization: a denied call never executes.
+        denial_reason = self._get_tool_policy_denial_reason(function_call)
+        if denial_reason is not None:
+            function_call.error = denial_reason
+            log_warning(f"{denial_reason} Skipping execution of tool '{function_call.function.name}'.")
+            function_call_timer = Timer()
+            function_call_timer.start()
+            function_call_timer.stop()
+            return (
+                False,
+                function_call_timer,
+                function_call,
+                FunctionExecutionResult(status="failure"),
+            )
+
         function_call_timer = Timer()
         function_call_timer.start()
         success: Union[bool, AgentRunException] = False
@@ -2633,6 +2707,16 @@ class Model(ABC):
 
         function_calls_to_run = []
         for fc in function_calls:
+            # Deterministic tool-policy authorization: a denied call never
+            # executes, never pauses for approval, and never emits a
+            # tool-call-started event. It is reported to the model as an
+            # error result, like the tool-call-limit path.
+            denial_reason = self._get_tool_policy_denial_reason(fc)
+            if denial_reason is not None:
+                log_warning(f"{denial_reason} Skipping execution of tool '{fc.function.name}'.")
+                function_call_results.append(self.create_tool_policy_denial_result(fc, denial_reason))
+                continue
+
             # The read-back tools exist only because offloading replaced a result
             # the model was told to go and read. Counting them against the limit
             # can refuse the very read the run needs to answer.

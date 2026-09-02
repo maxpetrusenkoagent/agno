@@ -114,7 +114,11 @@ def get_read_result_function(owner: Any, run_context: RunContext, async_mode: bo
             return f"Error reading result: {e}"
 
     entrypoint = aread_result if async_mode else read_result
-    return Function.from_callable(entrypoint, name="read_result")  # type: ignore[arg-type]
+    function = Function.from_callable(entrypoint, name="read_result")  # type: ignore[arg-type]
+    # Mark provenance so agent tool policies can exempt framework read-back
+    # tools without exempting user tools that happen to share the name.
+    function._is_offload_read_back = True
+    return function
 
 
 def get_search_result_function(owner: Any, run_context: RunContext, async_mode: bool = False) -> Function:
@@ -204,7 +208,11 @@ def get_search_result_function(owner: Any, run_context: RunContext, async_mode: 
             return f"Error searching result: {e}"
 
     entrypoint = asearch_result if async_mode else search_result
-    return Function.from_callable(entrypoint, name="search_result")  # type: ignore[arg-type]
+    function = Function.from_callable(entrypoint, name="search_result")  # type: ignore[arg-type]
+    # Mark provenance so agent tool policies can exempt framework read-back
+    # tools without exempting user tools that happen to share the name.
+    function._is_offload_read_back = True
+    return function
 
 
 __all__ = ["OFFLOAD_INSTRUCTION", "get_read_result_function", "get_search_result_function"]

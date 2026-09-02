@@ -66,6 +66,7 @@ from agno.session.summary import SessionSummary
 from agno.skills import Skills
 from agno.tools import Toolkit
 from agno.tools.function import Function
+from agno.tools.policy import ToolPolicy
 from agno.utils.log import log_warning
 from agno.utils.safe_formatter import SafeFormatter
 
@@ -191,6 +192,11 @@ class Agent:
 
     # A function that acts as middleware and is called around tool calls.
     tool_hooks: Optional[List[Callable]] = None
+
+    # Deterministic tool-call authorization policy, evaluated before any tool
+    # executes. When a call is denied, the tool is not executed and a
+    # structured denial message is returned to the model. See agno.tools.ToolPolicy.
+    tool_policy: Optional[ToolPolicy] = None
 
     # --- Agent Hooks ---
     # Functions called right after agent-session is loaded, before processing starts
@@ -435,6 +441,7 @@ class Agent:
         tool_call_limit: Optional[int] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         tool_hooks: Optional[List[Callable]] = None,
+        tool_policy: Optional[ToolPolicy] = None,
         pre_hooks: Optional[List[Union[Callable[..., Any], BaseGuardrail, BaseEval]]] = None,
         post_hooks: Optional[List[Union[Callable[..., Any], BaseGuardrail, BaseEval]]] = None,
         reasoning_model: Optional[Union[Model, str]] = None,
@@ -602,6 +609,7 @@ class Agent:
         self.tool_call_limit = tool_call_limit
         self.tool_choice = tool_choice
         self.tool_hooks = tool_hooks
+        self.tool_policy = tool_policy
 
         self.pre_hooks = pre_hooks
         self.post_hooks = post_hooks

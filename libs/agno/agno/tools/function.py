@@ -1277,6 +1277,10 @@ class Function(BaseModel):
     _team: Optional[Any] = None
     # The run context that the function is associated with
     _run_context: Optional[RunContext] = None
+    # True when this Function was created by the result-offloading framework
+    # (read_result / search_result), not by the user. Used to exempt only the
+    # framework's own read-back tools from agent tool policies.
+    _is_offload_read_back: bool = False
 
     # Parameters process_entrypoint kept out of the model-facing schema because the
     # framework supplies them, by name or by type annotation (e.g. `ctx: RunContext`).
